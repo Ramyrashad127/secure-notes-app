@@ -3,7 +3,6 @@ import { expect, test } from "@playwright/test";
 import {
   createUser,
   deleteUserByEmail,
-  sql,
   uniqueEmail,
 } from "./helpers";
 
@@ -18,7 +17,6 @@ test.afterAll(async () => {
   for (const email of trackedEmails) {
     await deleteUserByEmail(email);
   }
-  await sql.end();
 });
 
 test.describe("Authentication journeys", () => {
