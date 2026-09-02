@@ -25,9 +25,15 @@ export async function deleteUserByEmail(email: string): Promise<void> {
   `;
   for (const row of rows) {
     await sql`
+      DELETE FROM note_versions
+      WHERE user_id = ${row.id}
+         OR note_id IN (SELECT id FROM notes WHERE user_id = ${row.id})
+    `;
+    await sql`
       DELETE FROM audit_events
       WHERE user_id = ${row.id} OR entity_id = ${row.id}
     `;
+    await sql`DELETE FROM notes WHERE user_id = ${row.id}`;
     await sql`DELETE FROM users WHERE id = ${row.id}`;
   }
   await sql`
