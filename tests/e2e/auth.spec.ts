@@ -101,3 +101,60 @@ test.describe("Authentication journeys", () => {
     await expect(page).toHaveURL(/\/login/);
   });
 });
+
+test.describe("Route protection", () => {
+  test("unauthenticated visitors are redirected from /notes to /login", async ({
+    page,
+  }) => {
+    await page.goto("/notes");
+
+    await expect(page).toHaveURL(/\/login/);
+  });
+
+  test("unauthenticated visitors can still view the landing page", async ({
+    page,
+  }) => {
+    await page.goto("/");
+
+    await expect(page).toHaveURL(/\/$/);
+  });
+
+  test("authenticated users can access /notes", async ({ page }) => {
+    const email = track(uniqueEmail("guard-notes"));
+    await createUser(email, "Str0ngPass!");
+
+    await page.goto("/login");
+    await page.getByLabel("Email", { exact: true }).fill(email);
+    await page.getByLabel("Password", { exact: true }).fill("Str0ngPass!");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page).toHaveURL(/\/notes/);
+
+    await page.goto("/notes");
+    await expect(page).toHaveURL(/\/notes/);
+    await expect(
+      page.getByRole("heading", { name: "Your Notes" }),
+    ).toBeVisible();
+  });
+
+  test("authenticated users are redirected away from /login, /register, and /", async ({
+    page,
+  }) => {
+    const email = track(uniqueEmail("guard-redir"));
+    await createUser(email, "Str0ngPass!");
+
+    await page.goto("/login");
+    await page.getByLabel("Email", { exact: true }).fill(email);
+    await page.getByLabel("Password", { exact: true }).fill("Str0ngPass!");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page).toHaveURL(/\/notes/);
+
+    await page.goto("/login");
+    await expect(page).toHaveURL(/\/notes/);
+
+    await page.goto("/register");
+    await expect(page).toHaveURL(/\/notes/);
+
+    await page.goto("/");
+    await expect(page).toHaveURL(/\/notes/);
+  });
+});
