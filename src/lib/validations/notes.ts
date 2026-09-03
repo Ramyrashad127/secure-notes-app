@@ -22,12 +22,23 @@ export const updateNoteSchema = z.object({
   id: noteIdSchema,
   title: noteTitleSchema,
   content: noteContentSchema,
+  clientUpdatedAt: z
+    .union([z.string().datetime({ offset: true }), z.date()])
+    .transform((value) => (typeof value === "string" ? new Date(value) : value))
+    .optional(),
+  isManualSave: z.boolean().optional(),
 });
 
 export const deleteNoteSchema = z.object({
   id: noteIdSchema,
 });
 
+export const restoreVersionSchema = z.object({
+  noteId: noteIdSchema,
+  versionId: noteIdSchema,
+});
+
 export type CreateNoteInput = z.infer<typeof createNoteSchema>;
 export type UpdateNoteInput = z.infer<typeof updateNoteSchema>;
 export type DeleteNoteInput = z.infer<typeof deleteNoteSchema>;
+export type RestoreVersionInput = z.infer<typeof restoreVersionSchema>;
