@@ -24,6 +24,22 @@ export class NoteNotFoundError extends Error {
   }
 }
 
+export class ConflictError extends Error {
+  constructor() {
+    super("This note was updated elsewhere. Refresh and try again.");
+    this.name = "ConflictError";
+  }
+}
+
+export class VersionNotFoundError extends Error {
+  constructor() {
+    super("Version not found");
+    this.name = "VersionNotFoundError";
+  }
+}
+
+export const SNAPSHOT_INTERVAL_MS = 30 * 60 * 1000;
+
 export interface NoteStore {
   listByUserId(userId: string): Promise<Note[]>;
   findByIdAndUserId(id: string, userId: string): Promise<Note | null>;
@@ -34,6 +50,9 @@ export interface NoteStore {
 
 export interface VersionStore {
   insert(data: { noteId: string; userId: string; version: number; title: string; content: string }): Promise<NoteVersion>;
+  latestVersion(noteId: string): Promise<NoteVersion | null>;
+  listByNoteId(noteId: string): Promise<NoteVersion[]>;
+  findByIdAndNoteId(id: string, noteId: string): Promise<NoteVersion | null>;
 }
 
 export interface SessionStore {
@@ -78,6 +97,30 @@ const defaultDeps: Required<NotesDeps> = {
       if (!version) throw new Error("Failed to create note version");
       return version;
     },
+    async latestVersion(noteId) {
+      const [row] = await db
+        .select()
+        .from(noteVersions)
+        .where(eq(noteVersions.noteId, noteId))
+        .orderBy(desc(noteVersions.version))
+        .limit(1);
+      return row ?? null;
+    },
+    async listByNoteId(noteId) {
+      return db
+        .select()
+        .from(noteVersions)
+        .where(eq(noteVersions.noteId, noteId))
+        .orderBy(desc(noteVersions.version));
+    },
+    async findByIdAndNoteId(id, noteId) {
+      const [row] = await db
+        .select()
+        .from(noteVersions)
+        .where(and(eq(noteVersions.id, id), eq(noteVersions.noteId, noteId)))
+        .limit(1);
+      return row ?? null;
+    },
   },
   sessionStore: {
     async resolve(token) {
@@ -94,6 +137,16 @@ async function requireUserId(
   const session = await deps.sessionStore.resolve(token);
   if (!session) throw new UnauthorizedError();
   return session.userId;
+}
+
+async function requireOwnedNote(
+  noteId: string,
+  userId: string,
+  deps: Required<NotesDeps>,
+): Promise<Note> {
+  const note = await deps.noteStore.findByIdAndUserId(noteId, userId);
+  if (!note) throw new NoteNotFoundError();
+  return note;
 }
 
 export async function listNotes(
@@ -143,15 +196,51 @@ export async function createNote(
 
 export async function updateNote(
   noteId: string,
-  input: { title: string; content: string },
+  input: {
+    title: string;
+    content: string;
+    clientUpdatedAt?: Date;
+    isManualSave?: boolean;
+  },
   token: string,
   deps: Required<NotesDeps> = defaultDeps,
 ): Promise<Note> {
   const userId = await requireUserId(token, deps);
-  return deps.noteStore.update(noteId, userId, {
+
+  const current = await deps.noteStore.findByIdAndUserId(noteId, userId);
+  if (!current) throw new NoteNotFoundError();
+  const previousUpdatedAt = current.updatedAt.getTime();
+
+  if (
+    input.clientUpdatedAt &&
+    previousUpdatedAt > input.clientUpdatedAt.getTime()
+  ) {
+    throw new ConflictError();
+  }
+
+  const latestVersion = await deps.versionStore.latestVersion(noteId);
+
+  const updated = await deps.noteStore.update(noteId, userId, {
     title: input.title,
     content: input.content,
   });
+
+  const lastSnapshotAt = latestVersion?.createdAt.getTime() ?? 0;
+  const shouldSnapshot =
+    input.isManualSave === true ||
+    Date.now() - lastSnapshotAt >= SNAPSHOT_INTERVAL_MS;
+
+  if (shouldSnapshot) {
+    await deps.versionStore.insert({
+      noteId,
+      userId,
+      version: (latestVersion?.version ?? 0) + 1,
+      title: updated.title,
+      content: updated.content,
+    });
+  }
+
+  return updated;
 }
 
 export async function deleteNote(
@@ -170,4 +259,43 @@ export async function deleteNote(
     entityId: note.id,
     metadata: { title: note.title },
   });
+}
+
+export async function getNoteVersions(
+  noteId: string,
+  token: string,
+  deps: Required<NotesDeps> = defaultDeps,
+): Promise<NoteVersion[]> {
+  const userId = await requireUserId(token, deps);
+  await requireOwnedNote(noteId, userId, deps);
+  return deps.versionStore.listByNoteId(noteId);
+}
+
+export async function restoreVersion(
+  noteId: string,
+  versionId: string,
+  token: string,
+  deps: Required<NotesDeps> = defaultDeps,
+): Promise<Note> {
+  const userId = await requireUserId(token, deps);
+  await requireOwnedNote(noteId, userId, deps);
+
+  const version = await deps.versionStore.findByIdAndNoteId(versionId, noteId);
+  if (!version) throw new VersionNotFoundError();
+
+  const restored = await deps.noteStore.update(noteId, userId, {
+    title: version.title,
+    content: version.content,
+  });
+
+  const latestVersion = await deps.versionStore.latestVersion(noteId);
+  await deps.versionStore.insert({
+    noteId,
+    userId,
+    version: (latestVersion?.version ?? 0) + 1,
+    title: version.title,
+    content: version.content,
+  });
+
+  return restored;
 }

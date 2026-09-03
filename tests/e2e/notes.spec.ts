@@ -48,9 +48,10 @@ test.describe("Notes workspace lifecycle", () => {
 
     await page.getByLabel("Note title").fill("Groceries");
     await page.getByLabel("Note content").fill("Milk, eggs, bread");
-    await page.getByRole("button", { name: "Save" }).click();
 
-    await expect(page.getByText("Note saved")).toBeVisible();
+    await expect(page.getByText("Saved", { exact: true })).toBeVisible({
+      timeout: 10_000,
+    });
     await expect(page.getByRole("link", { name: "Groceries" })).toBeVisible();
 
     const noteId = noteIdFromUrl(page.url());
@@ -111,5 +112,51 @@ test.describe("Notes workspace lifecycle", () => {
 
     await otherContext.close();
     await ownerContext.close();
+  });
+
+  test("restores a previous version from history", async ({ page }) => {
+    const email = track(uniqueEmail("note-restore"));
+    await createUser(email, "Str0ngPass!");
+
+    await login(page, email, "Str0ngPass!");
+
+    await page.goto("/notes");
+    await page.getByRole("button", { name: "New note" }).click();
+    await page.waitForURL(/\/notes\/[0-9a-f-]{36}/);
+    const noteId = noteIdFromUrl(page.url());
+
+    await page.getByLabel("Note title").fill("My Note");
+    await page.getByLabel("Note content").fill("First version");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByText("Note saved")).toBeVisible();
+
+    await page.getByLabel("Note content").fill("Second version");
+    await expect(page.getByText("Saved", { exact: true })).toBeVisible({
+      timeout: 10_000,
+    });
+
+    await page.getByRole("button", { name: "History" }).click();
+    await page.getByRole("button", { name: /First version/ }).click();
+
+    await expect(page.getByText(/Viewing a past version/)).toBeVisible();
+    await expect(page.getByLabel("Note content")).toHaveValue("First version");
+
+    await page.getByRole("button", { name: "Restore this version" }).click();
+    await expect(page.getByText("Version restored")).toBeVisible();
+
+    await expect(page.getByText(/Viewing a past version/)).toHaveCount(0);
+    await expect(page.getByLabel("Note content")).toHaveValue("First version", {
+      timeout: 10_000,
+    });
+
+    const content = await sql<{ content: string }[]>`
+      SELECT content FROM notes WHERE id = ${noteId}
+    `;
+    expect(content[0].content).toBe("First version");
+
+    const count = await sql<{ count: string }[]>`
+      SELECT count(*) FROM note_versions WHERE note_id = ${noteId}
+    `;
+    expect(Number(count[0].count)).toBe(3);
   });
 });

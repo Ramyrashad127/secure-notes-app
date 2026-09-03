@@ -2,13 +2,17 @@ import { describe, expect, it } from "vitest";
 import type { AuditEventInput } from "@/lib/audit";
 import type { Note, NoteVersion } from "@/db/schema";
 import {
+  ConflictError,
   createNote,
   deleteNote,
   getNote,
+  getNoteVersions,
   listNotes,
   NoteNotFoundError,
+  restoreVersion,
   UnauthorizedError,
   updateNote,
+  VersionNotFoundError,
   type NotesDeps,
 } from "./notes-service";
 
@@ -21,6 +25,19 @@ function makeNote(overrides: Partial<Note> = {}): Note {
     deletedAt: null,
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
     updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function makeVersion(overrides: Partial<NoteVersion> = {}): NoteVersion {
+  return {
+    id: "ver-1",
+    noteId: "note-1",
+    userId: "user-a",
+    version: 1,
+    title: "Test note",
+    content: "Some content",
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
     ...overrides,
   };
 }
@@ -76,6 +93,23 @@ function createFakeDeps(): { deps: Required<NotesDeps>; state: FakeState } {
         const version: NoteVersion = { id: `ver-${state.versions.length + 1}`, createdAt: new Date(), ...data };
         state.versions.push(version);
         return version;
+      },
+      async latestVersion(noteId) {
+        const versions = state.versions
+          .filter((v) => v.noteId === noteId)
+          .sort((a, b) => b.version - a.version);
+        return versions[0] ?? null;
+      },
+      async listByNoteId(noteId) {
+        return state.versions
+          .filter((v) => v.noteId === noteId)
+          .sort((a, b) => b.version - a.version);
+      },
+      async findByIdAndNoteId(id, noteId) {
+        const version = state.versions.find(
+          (v) => v.id === id && v.noteId === noteId,
+        );
+        return version ?? null;
       },
     },
     sessionStore: {
@@ -200,8 +234,21 @@ describe("notes service: update & soft-delete", () => {
   it("updates the owner's note", async () => {
     const { deps, state } = createFakeDeps();
     state.sessions.set("token-a", "user-a");
-    const note = makeNote({ id: "n1", userId: "user-a" });
+    const note = makeNote({
+      id: "n1",
+      userId: "user-a",
+      updatedAt: new Date(Date.now() - 5 * 60 * 1000),
+    });
     state.notes.push(note);
+    state.versions.push(
+      makeVersion({
+        id: "v1",
+        noteId: "n1",
+        userId: "user-a",
+        version: 1,
+        createdAt: new Date(Date.now() - 5 * 60 * 1000),
+      }),
+    );
 
     const updated = await updateNote(
       "n1",
@@ -212,7 +259,7 @@ describe("notes service: update & soft-delete", () => {
 
     expect(updated.title).toBe("Renamed");
     expect(updated.content).toBe("New body");
-    expect(state.versions).toHaveLength(0);
+    expect(state.versions).toHaveLength(1);
     expect(state.audits).toHaveLength(0);
   });
 
@@ -275,5 +322,365 @@ describe("notes service: list ordering", () => {
     const list = await listNotes("token-a", deps);
 
     expect(list.map((n) => n.id)).toEqual(["new", "old"]);
+  });
+});
+
+describe("notes service: optimistic concurrency control", () => {
+  it("rejects a save whose clientUpdatedAt is older than the stored updatedAt", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    state.notes.push(
+      makeNote({
+        id: "n1",
+        userId: "user-a",
+        title: "Original",
+        updatedAt: new Date("2026-01-02T12:00:00.000Z"),
+      }),
+    );
+
+    await expect(
+      updateNote(
+        "n1",
+        {
+          title: "Stale overwrite",
+          content: "",
+          clientUpdatedAt: new Date("2026-01-02T11:59:59.000Z"),
+        },
+        "token-a",
+        deps,
+      ),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    expect(state.notes[0].title).toBe("Original");
+  });
+
+  it("allows a save whose clientUpdatedAt matches the stored updatedAt", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    state.notes.push(
+      makeNote({
+        id: "n1",
+        userId: "user-a",
+        title: "Original",
+        updatedAt: new Date("2026-01-02T12:00:00.000Z"),
+      }),
+    );
+
+    const updated = await updateNote(
+      "n1",
+      {
+        title: "Fresh",
+        content: "",
+        clientUpdatedAt: new Date("2026-01-02T12:00:00.000Z"),
+      },
+      "token-a",
+      deps,
+    );
+
+    expect(updated.title).toBe("Fresh");
+  });
+
+  it("skips the conflict check when clientUpdatedAt is omitted", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    state.notes.push(
+      makeNote({ id: "n1", userId: "user-a", title: "Original" }),
+    );
+
+    const updated = await updateNote(
+      "n1",
+      { title: "Changed", content: "" },
+      "token-a",
+      deps,
+    );
+
+    expect(updated.title).toBe("Changed");
+  });
+});
+
+describe("notes service: version snapshots", () => {
+  it("does not snapshot on a background autosave within 30 minutes of the last snapshot", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    state.notes.push(
+      makeNote({
+        id: "n1",
+        userId: "user-a",
+        title: "Live",
+        content: "Live body",
+        updatedAt: new Date(Date.now() - 5 * 1000),
+      }),
+    );
+    state.versions.push(
+      makeVersion({
+        id: "v1",
+        noteId: "n1",
+        userId: "user-a",
+        version: 1,
+        createdAt: new Date(Date.now() - 5 * 60 * 1000),
+      }),
+    );
+
+    const updated = await updateNote(
+      "n1",
+      { title: "Autosaved", content: "body" },
+      "token-a",
+      deps,
+    );
+
+    expect(updated.title).toBe("Autosaved");
+    expect(state.versions).toHaveLength(1);
+  });
+
+  it("snapshots once 30 minutes have passed since the last snapshot even if the note was just autosaved", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    state.notes.push(
+      makeNote({
+        id: "n1",
+        userId: "user-a",
+        title: "Live",
+        content: "Live body",
+        updatedAt: new Date(Date.now() - 5 * 1000),
+      }),
+    );
+    state.versions.push(
+      makeVersion({
+        id: "v1",
+        noteId: "n1",
+        userId: "user-a",
+        version: 1,
+        createdAt: new Date(Date.now() - 31 * 60 * 1000),
+      }),
+    );
+
+    const updated = await updateNote(
+      "n1",
+      { title: "Autosaved", content: "body" },
+      "token-a",
+      deps,
+    );
+
+    expect(updated.title).toBe("Autosaved");
+    expect(state.versions).toHaveLength(2);
+    expect(state.versions[1]).toMatchObject({
+      noteId: "n1",
+      userId: "user-a",
+      version: 2,
+      title: "Autosaved",
+      content: "body",
+    });
+  });
+
+  it("snapshots when exactly 30 minutes have passed since the last snapshot", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    state.notes.push(
+      makeNote({
+        id: "n1",
+        userId: "user-a",
+        title: "Live",
+        content: "Live body",
+        updatedAt: new Date(Date.now() - 5 * 1000),
+      }),
+    );
+    state.versions.push(
+      makeVersion({
+        id: "v1",
+        noteId: "n1",
+        userId: "user-a",
+        version: 1,
+        createdAt: new Date(Date.now() - 30 * 60 * 1000),
+      }),
+    );
+
+    await updateNote(
+      "n1",
+      { title: "Boundary", content: "b" },
+      "token-a",
+      deps,
+    );
+
+    expect(state.versions).toHaveLength(2);
+  });
+
+  it("manual saves bypass the 30-minute timer and snapshot immediately", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    state.notes.push(
+      makeNote({
+        id: "n1",
+        userId: "user-a",
+        title: "Live",
+        content: "Live body",
+        updatedAt: new Date(Date.now() - 5 * 1000),
+      }),
+    );
+    state.versions.push(
+      makeVersion({
+        id: "v1",
+        noteId: "n1",
+        userId: "user-a",
+        version: 1,
+        createdAt: new Date(Date.now() - 5 * 60 * 1000),
+      }),
+    );
+
+    const updated = await updateNote(
+      "n1",
+      { title: "Manual", content: "manual body", isManualSave: true },
+      "token-a",
+      deps,
+    );
+
+    expect(updated.title).toBe("Manual");
+    expect(state.versions).toHaveLength(2);
+    expect(state.versions[1]).toMatchObject({
+      noteId: "n1",
+      userId: "user-a",
+      version: 2,
+      title: "Manual",
+      content: "manual body",
+    });
+  });
+
+  it("a follow-up autosave does not snapshot again within 30 minutes of the snapshot", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    state.notes.push(
+      makeNote({
+        id: "n1",
+        userId: "user-a",
+        title: "Live",
+        content: "Live body",
+        updatedAt: new Date(Date.now() - 5 * 1000),
+      }),
+    );
+    state.versions.push(
+      makeVersion({
+        id: "v1",
+        noteId: "n1",
+        userId: "user-a",
+        version: 1,
+        createdAt: new Date(Date.now() - 31 * 60 * 1000),
+      }),
+    );
+
+    await updateNote("n1", { title: "First", content: "c1" }, "token-a", deps);
+    expect(state.versions).toHaveLength(2);
+
+    await updateNote("n1", { title: "Second", content: "c2" }, "token-a", deps);
+
+    expect(state.versions).toHaveLength(2);
+  });
+});
+
+describe("notes service: getNoteVersions", () => {
+  it("rejects an invalid token", async () => {
+    const { deps } = createFakeDeps();
+
+    await expect(getNoteVersions("n1", "bad-token", deps)).rejects.toBeInstanceOf(
+      UnauthorizedError,
+    );
+  });
+
+  it("returns all versions for an owned note, newest first", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    state.notes.push(makeNote({ id: "n1", userId: "user-a", title: "Doc" }));
+    state.versions.push(
+      makeVersion({ id: "v1", noteId: "n1", userId: "user-a", version: 1, title: "Old", content: "old body" }),
+      makeVersion({ id: "v2", noteId: "n1", userId: "user-a", version: 2, title: "New", content: "new body" }),
+      makeVersion({ id: "v3", noteId: "n1", userId: "user-a", version: 3, title: "Newest", content: "newest body" }),
+    );
+
+    const versions = await getNoteVersions("n1", "token-a", deps);
+
+    expect(versions.map((v) => v.version)).toEqual([3, 2, 1]);
+  });
+
+  it("does not leak another user's note versions", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-b", "user-b");
+    state.notes.push(makeNote({ id: "n1", userId: "user-a", title: "Private" }));
+    state.versions.push(makeVersion({ id: "v1", noteId: "n1", userId: "user-a", version: 1 }));
+
+    await expect(getNoteVersions("n1", "token-b", deps)).rejects.toBeInstanceOf(
+      NoteNotFoundError,
+    );
+  });
+});
+
+describe("notes service: restoreVersion", () => {
+  it("rejects an invalid token", async () => {
+    const { deps } = createFakeDeps();
+
+    await expect(
+      restoreVersion("n1", "v1", "bad-token", deps),
+    ).rejects.toBeInstanceOf(UnauthorizedError);
+  });
+
+  it("restores a note's title/content from the version, bumps updatedAt, and appends a snapshot", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    const before = new Date("2026-01-01T00:00:00.000Z");
+    const note = makeNote({ id: "n1", userId: "user-a", title: "Current", content: "current body", updatedAt: before });
+    state.notes.push(note);
+    state.versions.push(
+      makeVersion({ id: "v1", noteId: "n1", userId: "user-a", version: 1, title: "Old title", content: "old body" }),
+      makeVersion({ id: "v2", noteId: "n1", userId: "user-a", version: 2, title: "This note", content: "this body" }),
+    );
+
+    const restored = await restoreVersion("n1", "v2", "token-a", deps);
+
+    expect(restored.title).toBe("This note");
+    expect(restored.content).toBe("this body");
+    expect(restored.updatedAt.getTime()).toBeGreaterThan(before.getTime());
+
+    expect(state.versions).toHaveLength(3);
+    expect(state.versions[2]).toMatchObject({
+      noteId: "n1",
+      userId: "user-a",
+      version: 3,
+      title: "This note",
+      content: "this body",
+    });
+  });
+
+  it("does not restore another user's note", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-b", "user-b");
+    state.notes.push(makeNote({ id: "n1", userId: "user-a", title: "Private" }));
+    state.versions.push(makeVersion({ id: "v1", noteId: "n1", userId: "user-a", version: 1 }));
+
+    await expect(restoreVersion("n1", "v1", "token-b", deps)).rejects.toBeInstanceOf(
+      NoteNotFoundError,
+    );
+
+    expect(state.notes[0].title).toBe("Private");
+    expect(state.versions).toHaveLength(1);
+  });
+
+  it("throws when the version does not belong to the note", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    state.notes.push(makeNote({ id: "n1", userId: "user-a", title: "Doc" }));
+    state.versions.push(makeVersion({ id: "v1", noteId: "n1", userId: "user-a", version: 1 }));
+    state.versions.push(makeVersion({ id: "v-other", noteId: "other-note", userId: "user-a", version: 1 }));
+
+    await expect(restoreVersion("n1", "v-other", "token-a", deps)).rejects.toBeInstanceOf(
+      VersionNotFoundError,
+    );
+  });
+
+  it("throws when the version is missing", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    state.notes.push(makeNote({ id: "n1", userId: "user-a", title: "Doc" }));
+    state.versions.push(makeVersion({ id: "v1", noteId: "n1", userId: "user-a", version: 1 }));
+
+    await expect(restoreVersion("n1", "missing", "token-a", deps)).rejects.toBeInstanceOf(
+      VersionNotFoundError,
+    );
   });
 });
