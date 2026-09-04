@@ -187,6 +187,42 @@ export async function loginUser(
   return toSessionCookie(token);
 }
 
+/**
+ * Resolve a user by credentials WITHOUT creating a session. Used when the
+ * login flow must first pass a 2FA challenge before a session is established.
+ * Throws InvalidCredentialsError on bad credentials.
+ */
+export async function verifyLoginCredentials(
+  data: LoginInput,
+  deps: AuthDeps = defaultDeps,
+): Promise<User> {
+  const user = await deps.userStore.findByEmail(data.email);
+
+  if (!user) {
+    await deps.passwordStore.verify(data.password, DUMMY_HASH).catch(() => false);
+    deps.auditSink({
+      action: "AUTH_LOGIN_FAILED",
+      entityType: "user",
+      metadata: { email: data.email },
+    });
+    throw new InvalidCredentialsError();
+  }
+
+  const passwordValid = await deps.passwordStore.verify(data.password, user.passwordHash);
+
+  if (!passwordValid) {
+    deps.auditSink({
+      userId: user.id,
+      action: "AUTH_LOGIN_FAILED",
+      entityType: "user",
+      entityId: user.id,
+    });
+    throw new InvalidCredentialsError();
+  }
+
+  return user;
+}
+
 export async function logoutUser(
   token: string,
   deps: AuthDeps = defaultDeps,

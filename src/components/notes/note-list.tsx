@@ -3,7 +3,7 @@
 import * as React from "react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { Trash2 } from "lucide-react"
+import { Settings as SettingsIcon, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { deleteNoteAction } from "@/actions/notes"
@@ -46,6 +46,13 @@ export function NoteList({ notes }: { notes: Note[] }) {
           </ul>
         )}
       </ScrollArea>
+      <Link
+        href="/settings"
+        className="inline-flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+      >
+        <SettingsIcon aria-hidden className="size-4" />
+        Settings
+      </Link>
     </div>
   )
 }

@@ -8,6 +8,7 @@ import {
   logoutUser,
   registerUser,
   toSessionCookie,
+  verifyLoginCredentials,
   type AuthDeps,
 } from "./auth-service";
 import type { AuditEventInput } from "@/lib/audit";
@@ -212,6 +213,35 @@ describe("loginUser", () => {
         metadata: { email: "missing@example.com" },
       }),
     );
+  });
+});
+
+describe("verifyLoginCredentials", () => {
+  it("resolves the user without creating a session", async () => {
+    const { deps, state } = createFakeDeps([
+      makeUser({ email: "user@example.com", passwordHash: fakeHash("correct-password") }),
+    ]);
+
+    const user = await verifyLoginCredentials(
+      { email: "user@example.com", password: "correct-password" },
+      deps,
+    );
+
+    expect(user.email).toBe("user@example.com");
+    expect(state.lastToken).toBeNull();
+  });
+
+  it("throws on invalid credentials", async () => {
+    const { deps } = createFakeDeps([
+      makeUser({ email: "user@example.com", passwordHash: fakeHash("correct-password") }),
+    ]);
+
+    await expect(
+      verifyLoginCredentials(
+        { email: "user@example.com", password: "wrong-password" },
+        deps,
+      ),
+    ).rejects.toBeInstanceOf(InvalidCredentialsError);
   });
 });
 

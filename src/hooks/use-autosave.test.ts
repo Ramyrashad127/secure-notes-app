@@ -108,6 +108,55 @@ describe("useAutosave sync state machine", () => {
     expect(saveFn).toHaveBeenCalledTimes(1);
   });
 
+  it("tracks isLiveDirty and isSnapshotPending separately across autosave and manual save", async () => {
+    const saveFn = vi.fn().mockResolvedValue({
+      success: true as const,
+      updatedAt: new Date("2026-01-01T12:00:05.000Z"),
+    });
+    const params = makeParams({ saveFn });
+    const { result, rerender, unmount } = renderHook(
+      (p) => useAutosave(p),
+      { initialProps: params },
+    );
+    trackUnmount(unmount);
+
+    expect(result.current.isLiveDirty).toBe(false);
+    expect(result.current.isSnapshotPending).toBe(false);
+
+    // Edit: both become true
+    rerender({ ...params, value: { title: "Edited", content: "New body" } });
+    await waitFor(() => expect(result.current.isLiveDirty).toBe(true));
+    expect(result.current.isSnapshotPending).toBe(true);
+
+    // After autosave completes, isLiveDirty false but isSnapshotPending stays true
+    await waitFor(() => expect(result.current.status).toBe("saved"));
+    expect(result.current.isLiveDirty).toBe(false);
+    expect(result.current.isSnapshotPending).toBe(true);
+
+    // Manual save clears isSnapshotPending
+    act(() => result.current.save({ manual: true }));
+    await waitFor(() => expect(result.current.isSnapshotPending).toBe(false));
+  });
+
+  it("clears isSnapshotPending when a background autosave creates a snapshot", async () => {
+    const saveFn = vi.fn().mockResolvedValue({
+      success: true as const,
+      snapshotCreated: true,
+      updatedAt: new Date("2026-01-01T12:00:05.000Z"),
+    });
+    const params = makeParams({ saveFn });
+    const { result, rerender, unmount } = renderHook(
+      (p) => useAutosave(p),
+      { initialProps: params },
+    );
+    trackUnmount(unmount);
+
+    rerender({ ...params, value: { title: "Edited", content: "New body" } });
+    await waitFor(() => expect(result.current.status).toBe("saved"));
+
+    expect(result.current.isSnapshotPending).toBe(false);
+  });
+
   it("reports lastSaveWasManual true after a manual save and false after an autosave", async () => {
     const saveFn = vi.fn().mockResolvedValue({
       success: true as const,
@@ -352,6 +401,38 @@ describe("useAutosave offline flush", () => {
     expect(localStorage.getItem("autosave:note-1")).toBeNull();
   });
 });
+
+  describe("useAutosave reconcile", () => {
+    it("adopts a new value as the last-saved baseline and clears the dirty state", async () => {
+      const saveFn = vi.fn().mockResolvedValue({
+        success: true as const,
+        updatedAt: new Date("2026-01-01T12:00:05.000Z"),
+      });
+      const params = makeParams({ saveFn });
+      const { result, rerender, unmount: renderResultUnmount } = renderHook(
+        (p) => useAutosave(p),
+        { initialProps: params },
+      );
+      trackUnmount(renderResultUnmount);
+
+      act(() =>
+        result.current.reconcile({ title: "Restored", content: "Restored body" }),
+      );
+
+      expect(result.current.currentValue).toEqual({
+        title: "Restored",
+        content: "Restored body",
+      });
+      expect(result.current.status).toBe("idle");
+
+      rerender({
+        ...params,
+        value: { title: "Restored", content: "Restored body" },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(saveFn).not.toHaveBeenCalled();
+    });
+  });
 
   describe("useAutosave cleanup", () => {
     it("cancels the debounced timer on unmount", async () => {

@@ -10,6 +10,7 @@ import { toast } from "sonner"
 
 import { loginAction } from "@/actions/auth"
 import { PasswordInput } from "@/components/auth/password-input"
+import { TwoFactorChallengeForm } from "@/components/auth/two-factor-challenge-form"
 import { Button } from "@/components/ui/button"
 import {
   Form,
@@ -24,6 +25,7 @@ import { loginSchema, type LoginInput } from "@/lib/validations/auth"
 
 export function LoginForm() {
   const router = useRouter()
+  const [requiresTwoFactor, setRequiresTwoFactor] = React.useState(false)
   const [isPending, startTransition] = React.useTransition()
 
   const form = useForm<LoginInput>({
@@ -35,6 +37,11 @@ export function LoginForm() {
     startTransition(async () => {
       const result = await loginAction(values)
 
+      if (result.success && "requiresTwoFactor" in result) {
+        setRequiresTwoFactor(true)
+        return
+      }
+
       if (result.success) {
         toast.success("Welcome back!")
         router.push("/notes")
@@ -45,6 +52,10 @@ export function LoginForm() {
       form.setError("root", { message: result.error })
       toast.error(result.error)
     })
+  }
+
+  if (requiresTwoFactor) {
+    return <TwoFactorChallengeForm />
   }
 
   return (

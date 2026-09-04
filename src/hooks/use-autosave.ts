@@ -11,7 +11,7 @@ export interface AutosavePayload {
 }
 
 export type AutosaveResult =
-  | { success: true; updatedAt: Date }
+  | { success: true; updatedAt: Date; snapshotCreated?: boolean }
   | { success: false; error: string; message?: string };
 
 export interface UseAutosaveParams<TValue> {
@@ -28,6 +28,12 @@ export interface UseAutosaveReturn<TValue> {
   save: (options?: { manual?: boolean }) => void;
   currentValue: TValue;
   lastSaveWasManual: boolean;
+  /** Whether a 5s autosave is needed (editor differs from last autosave). */
+  isLiveDirty: boolean;
+  /** Whether the manual "Save" (create snapshot) button should be active. */
+  isSnapshotPending: boolean;
+  /** Adopt server-authoritative state (e.g. after a version restore) as the new last-saved baseline. */
+  reconcile: (value: TValue) => void;
 }
 
 const STORAGE_PREFIX = "autosave:";
@@ -77,6 +83,8 @@ export function useAutosave<TValue>({
   const [isConflict, setIsConflict] = React.useState(false);
   const [currentValue, setCurrentValue] = React.useState<TValue>(value);
   const [lastSaveWasManual, setLastSaveWasManual] = React.useState(false);
+  const [lastSnapshottedValue, setLastSnapshottedValue] =
+    React.useState<TValue>(value);
 
   const lastSavedAtRef = React.useRef<Date | null>(initialUpdatedAt ?? null);
   const saveFnRef = React.useRef(saveFn);
@@ -131,6 +139,9 @@ export function useAutosave<TValue>({
         setCurrentValue(savedValue);
         setLastSaveWasManual(payload.isManualSave);
         setStatus("saved");
+        if (payload.isManualSave === true || result.snapshotCreated === true) {
+          setLastSnapshottedValue(savedValue);
+        }
       } catch {
         writeStash(noteId, {
           id: payload.id,
@@ -181,6 +192,17 @@ export function useAutosave<TValue>({
     [buildPayload, cancelTimer, delayMs, performSave],
   );
 
+  const reconcile = React.useCallback((newValue: TValue) => {
+    cancelTimer();
+    latestValueRef.current = newValue;
+    prevValueRef.current = newValue;
+    lastSavedAtRef.current = new Date();
+    setLastSnapshottedValue(newValue);
+    setCurrentValue(newValue);
+    setLastSaveWasManual(false);
+    setStatus("idle");
+  }, [cancelTimer]);
+
   React.useEffect(() => {
     if (!mountedRef.current) {
       mountedRef.current = true;
@@ -225,5 +247,19 @@ export function useAutosave<TValue>({
     };
   }, [cancelTimer, getClientUpdatedAt, noteId, performSave]);
 
-  return { status, isConflict, save, currentValue, lastSaveWasManual };
+  const isLiveDirty =
+    JSON.stringify(value) !== JSON.stringify(currentValue);
+  const isSnapshotPending =
+    JSON.stringify(value) !== JSON.stringify(lastSnapshottedValue);
+
+  return {
+    status,
+    isConflict,
+    save,
+    currentValue,
+    lastSaveWasManual,
+    isLiveDirty,
+    isSnapshotPending,
+    reconcile,
+  };
 }

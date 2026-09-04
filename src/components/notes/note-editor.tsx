@@ -32,7 +32,14 @@ export function NoteEditor({ note }: { note: Note }) {
   const [preview, setPreview] = React.useState<NoteVersion | null>(null)
   const [isRestoring, startRestoreTransition] = React.useTransition()
 
-  const { status, isConflict, save, lastSaveWasManual } = useAutosave<{
+  const {
+    status,
+    isConflict,
+    save,
+    lastSaveWasManual,
+    isSnapshotPending,
+    reconcile,
+  } = useAutosave<{
     title: string
     content: string
   }>({
@@ -42,7 +49,11 @@ export function NoteEditor({ note }: { note: Note }) {
     saveFn: async (payload: AutosavePayload) => {
       const result = await updateNoteAction(payload)
       if (!result.success) return result
-      return { success: true, updatedAt: new Date() }
+      return {
+        success: true,
+        updatedAt: new Date(),
+        snapshotCreated: result.snapshotCreated,
+      }
     },
   })
 
@@ -59,6 +70,9 @@ export function NoteEditor({ note }: { note: Note }) {
     setPrevNote(note)
     setTitle(note.title)
     setContent(note.content)
+    if (title !== note.title || content !== note.content) {
+      reconcile({ title: note.title, content: note.content })
+    }
   }
 
   React.useEffect(() => {
@@ -78,6 +92,19 @@ export function NoteEditor({ note }: { note: Note }) {
       )
     }
   }, [status, lastSaveWasManual, note.id])
+
+  React.useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault()
+        if (isSnapshotPending && !isLocked) {
+          save({ manual: true })
+        }
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [isSnapshotPending, isLocked, save])
 
   function handleManualSave() {
     save({ manual: true })
@@ -177,7 +204,10 @@ export function NoteEditor({ note }: { note: Note }) {
       <div className="flex items-center justify-end gap-2">
         <AutosaveIndicator status={status} />
         <VersionHistory noteId={note.id} onSelect={setPreview} />
-        <Button onClick={handleManualSave} disabled={isLocked}>
+        <Button
+          onClick={handleManualSave}
+          disabled={isLocked || !isSnapshotPending}
+        >
           <Save aria-hidden />
           Save
         </Button>

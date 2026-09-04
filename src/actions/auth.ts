@@ -7,13 +7,16 @@ import {
   loginUser,
   logoutUser,
   registerUser,
+  verifyLoginCredentials,
 } from "@/lib/auth/auth-service";
 import { SESSION_COOKIE_NAME } from "@/lib/auth/session";
+import { PENDING_2FA_COOKIE } from "@/lib/auth/two-factor-service";
 import { loginSchema, registerSchema } from "@/lib/validations/auth";
 
 export type AuthActionResult =
   | { success: true }
-  | { success: false; error: string };
+  | { success: false; error: string }
+  | { success: true; requiresTwoFactor: true };
 
 export interface RegisterActionInput {
   email: string;
@@ -63,8 +66,21 @@ export async function loginAction(
   }
 
   try {
-    const cookie = await loginUser(parsed);
+    const user = await verifyLoginCredentials(parsed);
     const cookieStore = await cookies();
+
+    if (user.twoFactorEnabled) {
+      cookieStore.set(PENDING_2FA_COOKIE, user.id, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "strict",
+        path: "/",
+        maxAge: 60 * 10,
+      });
+      return { success: true, requiresTwoFactor: true };
+    }
+
+    const cookie = await loginUser(parsed);
     cookieStore.set(cookie.name, cookie.value, cookie.options);
     return { success: true };
   } catch {

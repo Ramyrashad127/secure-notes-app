@@ -250,7 +250,7 @@ describe("notes service: update & soft-delete", () => {
       }),
     );
 
-    const updated = await updateNote(
+    const { note: updated } = await updateNote(
       "n1",
       { title: "Renamed", content: "New body" },
       "token-a",
@@ -366,7 +366,7 @@ describe("notes service: optimistic concurrency control", () => {
       }),
     );
 
-    const updated = await updateNote(
+    const { note: updated } = await updateNote(
       "n1",
       {
         title: "Fresh",
@@ -387,7 +387,7 @@ describe("notes service: optimistic concurrency control", () => {
       makeNote({ id: "n1", userId: "user-a", title: "Original" }),
     );
 
-    const updated = await updateNote(
+    const { note: updated } = await updateNote(
       "n1",
       { title: "Changed", content: "" },
       "token-a",
@@ -421,7 +421,7 @@ describe("notes service: version snapshots", () => {
       }),
     );
 
-    const updated = await updateNote(
+    const { note: updated } = await updateNote(
       "n1",
       { title: "Autosaved", content: "body" },
       "token-a",
@@ -454,7 +454,7 @@ describe("notes service: version snapshots", () => {
       }),
     );
 
-    const updated = await updateNote(
+    const { note: updated } = await updateNote(
       "n1",
       { title: "Autosaved", content: "body" },
       "token-a",
@@ -463,12 +463,13 @@ describe("notes service: version snapshots", () => {
 
     expect(updated.title).toBe("Autosaved");
     expect(state.versions).toHaveLength(2);
+    // A background autosave snapshots the PREVIOUS database content, not the incoming payload
     expect(state.versions[1]).toMatchObject({
       noteId: "n1",
       userId: "user-a",
       version: 2,
-      title: "Autosaved",
-      content: "body",
+      title: "Live",
+      content: "Live body",
     });
   });
 
@@ -526,7 +527,7 @@ describe("notes service: version snapshots", () => {
       }),
     );
 
-    const updated = await updateNote(
+    const { note: updated } = await updateNote(
       "n1",
       { title: "Manual", content: "manual body", isManualSave: true },
       "token-a",
@@ -572,6 +573,94 @@ describe("notes service: version snapshots", () => {
     await updateNote("n1", { title: "Second", content: "c2" }, "token-a", deps);
 
     expect(state.versions).toHaveLength(2);
+  });
+
+  it("background autosave past the threshold snapshots the previous DB content, not the incoming overwrite", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    state.notes.push(
+      makeNote({
+        id: "n1",
+        userId: "user-a",
+        title: "Long document",
+        content: "Previous hour of carefully typed content",
+        updatedAt: new Date(Date.now() - 5 * 1000),
+      }),
+    );
+    state.versions.push(
+      makeVersion({
+        id: "v1",
+        noteId: "n1",
+        userId: "user-a",
+        version: 1,
+        title: "Long document",
+        content: "Previous hour of carefully typed content",
+        createdAt: new Date(Date.now() - 31 * 60 * 1000),
+      }),
+    );
+
+    // User selects all and deletes -> 5s autosave sends blank content
+    const { note: updated } = await updateNote(
+      "n1",
+      { title: "Long document", content: "" },
+      "token-a",
+      deps,
+    );
+
+    // Live note must reflect the new (blank) content
+    expect(updated.content).toBe("");
+
+    // Snapshot must capture the PREVIOUS database content, not the blank overwrite
+    expect(state.versions).toHaveLength(2);
+    expect(state.versions[1]).toMatchObject({
+      noteId: "n1",
+      userId: "user-a",
+      version: 2,
+      title: "Long document",
+      content: "Previous hour of carefully typed content",
+    });
+  });
+
+  it("manual save snapshots the incoming (new) content", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    state.notes.push(
+      makeNote({
+        id: "n1",
+        userId: "user-a",
+        title: "Live",
+        content: "Live body",
+        updatedAt: new Date(Date.now() - 5 * 1000),
+      }),
+    );
+    state.versions.push(
+      makeVersion({
+        id: "v1",
+        noteId: "n1",
+        userId: "user-a",
+        version: 1,
+        title: "Live",
+        content: "Live body",
+        createdAt: new Date(Date.now() - 5 * 60 * 1000),
+      }),
+    );
+
+    const { note: updated } = await updateNote(
+      "n1",
+      { title: "Live", content: "brand new content", isManualSave: true },
+      "token-a",
+      deps,
+    );
+
+    expect(updated.content).toBe("brand new content");
+    expect(state.versions).toHaveLength(2);
+    expect(state.versions[1]).toMatchObject({
+      noteId: "n1",
+      userId: "user-a",
+      version: 2,
+      title: "Live",
+      content: "brand new content",
+    });
   });
 });
 
@@ -682,5 +771,141 @@ describe("notes service: restoreVersion", () => {
     await expect(restoreVersion("n1", "missing", "token-a", deps)).rejects.toBeInstanceOf(
       VersionNotFoundError,
     );
+  });
+});
+
+describe("notes service: redundant save prevention", () => {
+  it("autosave: short-circuits when the incoming content matches the live note", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    const note = makeNote({
+      id: "n1",
+      userId: "user-a",
+      title: "Original",
+      content: "Same body",
+    });
+    state.notes.push(note);
+    state.versions.push(makeVersion({ id: "v1", noteId: "n1", userId: "user-a", version: 1 }));
+
+    const { note: updated } = await updateNote(
+      "n1",
+      { title: "Original", content: "Same body" },
+      "token-a",
+      deps,
+    );
+
+    expect(updated.title).toBe("Original");
+    expect(state.versions).toHaveLength(1);
+  });
+
+  it("autosave: does not update the stored updatedAt when the content is unchanged", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    const originalUpdatedAt = new Date("2026-01-01T12:00:00.000Z");
+    const note = makeNote({
+      id: "n1",
+      userId: "user-a",
+      title: "Original",
+      content: "Same body",
+      updatedAt: originalUpdatedAt,
+    });
+    state.notes.push(note);
+
+    await updateNote(
+      "n1",
+      { title: "Original", content: "Same body" },
+      "token-a",
+      deps,
+    );
+
+    expect(state.notes[0].updatedAt.getTime()).toBe(originalUpdatedAt.getTime());
+  });
+
+  it("manual save: creates a snapshot even when incoming matches the live note but differs from the latest snapshot", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    // live note was autosaved; latest snapshot is an older state
+    state.notes.push(
+      makeNote({
+        id: "n1",
+        userId: "user-a",
+        title: "Original",
+        content: "Autosaved body",
+      }),
+    );
+    state.versions.push(
+      makeVersion({
+        id: "v1",
+        noteId: "n1",
+        userId: "user-a",
+        version: 1,
+        title: "Original",
+        content: "Older body",
+      }),
+    );
+
+    await updateNote(
+      "n1",
+      { title: "Original", content: "Autosaved body", isManualSave: true },
+      "token-a",
+      deps,
+    );
+
+    expect(state.versions).toHaveLength(2);
+    expect(state.versions[1]).toMatchObject({
+      version: 2,
+      title: "Original",
+      content: "Autosaved body",
+    });
+  });
+
+  it("manual save: short-circuits and creates no snapshot when incoming matches the latest snapshot", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    state.notes.push(
+      makeNote({
+        id: "n1",
+        userId: "user-a",
+        title: "Original",
+        content: "Same body",
+      }),
+    );
+    state.versions.push(
+      makeVersion({
+        id: "v1",
+        noteId: "n1",
+        userId: "user-a",
+        version: 1,
+        title: "Original",
+        content: "Same body",
+      }),
+    );
+
+    await updateNote(
+      "n1",
+      { title: "Original", content: "Same body", isManualSave: true },
+      "token-a",
+      deps,
+    );
+
+    expect(state.versions).toHaveLength(1);
+    expect(state.versions[0].version).toBe(1);
+  });
+
+  it("rejects a redundant save for a different user's note", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-b", "user-b");
+    state.notes.push(
+      makeNote({ id: "n1", userId: "user-a", title: "Original", content: "Same body" }),
+    );
+
+    await expect(
+      updateNote(
+        "n1",
+        { title: "Original", content: "Same body" },
+        "token-b",
+        deps,
+      ),
+    ).rejects.toBeInstanceOf(NoteNotFoundError);
   });
 });
