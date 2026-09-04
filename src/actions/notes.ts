@@ -31,7 +31,7 @@ import {
 import { CONFLICT_ERROR } from "@/lib/notes/conflict";
 
 export type NoteActionResult =
-  | { success: true }
+  | { success: true; snapshotCreated?: boolean }
   | { success: false; error: string; message?: string };
 
 /** Payload returned when a save conflicts with a newer server-side update. */
@@ -123,7 +123,7 @@ export async function updateNoteAction(
   if (!token) return { success: false, error: "You must be signed in to do that" };
 
   try {
-    const updated = await updateNote(
+    const { note, snapshotCreated } = await updateNote(
       parsed.id,
       {
         title: parsed.title,
@@ -133,9 +133,9 @@ export async function updateNoteAction(
       },
       token,
     );
-    revalidatePath(`/notes/${updated.id}`);
+    revalidatePath(`/notes/${note.id}`);
     revalidatePath("/notes", "layout");
-    return { success: true };
+    return { success: true, snapshotCreated };
   } catch (error) {
     return noteActionError(error);
   }

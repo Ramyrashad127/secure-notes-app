@@ -204,12 +204,32 @@ export async function updateNote(
   },
   token: string,
   deps: Required<NotesDeps> = defaultDeps,
-): Promise<Note> {
+): Promise<{ note: Note; snapshotCreated: boolean }> {
   const userId = await requireUserId(token, deps);
 
   const current = await deps.noteStore.findByIdAndUserId(noteId, userId);
   if (!current) throw new NoteNotFoundError();
   const previousUpdatedAt = current.updatedAt.getTime();
+  const previousTitle = current.title;
+  const previousContent = current.content;
+
+  const latestVersion = await deps.versionStore.latestVersion(noteId);
+  const lastSnapshotAt = latestVersion?.createdAt.getTime() ?? 0;
+  const latestSnapshotTitle = latestVersion?.title ?? null;
+  const latestSnapshotContent = latestVersion?.content ?? null;
+
+  const matchesLive =
+    input.title === current.title && input.content === current.content;
+  const matchesLatestSnapshot =
+    latestSnapshotTitle === input.title && latestSnapshotContent === input.content;
+
+  if (input.isManualSave === true) {
+    if (matchesLatestSnapshot) {
+      return { note: current, snapshotCreated: false };
+    }
+  } else if (matchesLive) {
+    return { note: current, snapshotCreated: false };
+  }
 
   if (
     input.clientUpdatedAt &&
@@ -218,29 +238,32 @@ export async function updateNote(
     throw new ConflictError();
   }
 
-  const latestVersion = await deps.versionStore.latestVersion(noteId);
-
   const updated = await deps.noteStore.update(noteId, userId, {
     title: input.title,
     content: input.content,
   });
 
-  const lastSnapshotAt = latestVersion?.createdAt.getTime() ?? 0;
   const shouldSnapshot =
     input.isManualSave === true ||
     Date.now() - lastSnapshotAt >= SNAPSHOT_INTERVAL_MS;
 
+  let snapshotCreated = false;
   if (shouldSnapshot) {
+    const snapshotTitle = input.isManualSave ? updated.title : previousTitle;
+    const snapshotContent = input.isManualSave
+      ? updated.content
+      : previousContent;
     await deps.versionStore.insert({
       noteId,
       userId,
       version: (latestVersion?.version ?? 0) + 1,
-      title: updated.title,
-      content: updated.content,
+      title: snapshotTitle,
+      content: snapshotContent,
     });
+    snapshotCreated = true;
   }
 
-  return updated;
+  return { note: updated, snapshotCreated };
 }
 
 export async function deleteNote(

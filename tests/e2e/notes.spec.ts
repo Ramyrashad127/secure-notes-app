@@ -159,4 +159,39 @@ test.describe("Notes workspace lifecycle", () => {
     `;
     expect(Number(count[0].count)).toBe(3);
   });
+
+  test("manual Save stays enabled after an autosave and creates a snapshot", async ({
+    page,
+  }) => {
+    const email = track(uniqueEmail("note-manual-after-autosave"));
+    await createUser(email, "Str0ngPass!");
+
+    await login(page, email, "Str0ngPass!");
+
+    await page.goto("/notes");
+    await page.getByRole("button", { name: "New note" }).click();
+    await page.waitForURL(/\/notes\/[0-9a-f-]{36}/);
+    const noteId = noteIdFromUrl(page.url());
+
+    await page.getByLabel("Note title").fill("Live note");
+    await page.getByLabel("Note content").fill("Edited content");
+
+    // Wait for the 5s autosave to persist the live note
+    await expect(page.getByText("Saved", { exact: true })).toBeVisible({
+      timeout: 10_000,
+    });
+
+    // The manual Save button must remain enabled even though autosave just ran
+    const saveButton = page.getByRole("button", { name: "Save", exact: true });
+    await expect(saveButton).toBeEnabled();
+
+    await saveButton.click();
+    await expect(page.getByText("Note saved")).toBeVisible();
+
+    // A manual save must have created a snapshot (v2), distinct from v1
+    const count = await sql<{ count: string }[]>`
+      SELECT count(*) FROM note_versions WHERE note_id = ${noteId}
+    `;
+    expect(Number(count[0].count)).toBe(2);
+  });
 });
