@@ -11,7 +11,6 @@ import {
   verifyLoginCredentials,
   type AuthDeps,
 } from "./auth-service";
-import type { AuditEventInput } from "@/lib/audit";
 import type { Session, User } from "@/db/schema";
 
 function fakeHash(password: string): string {
@@ -49,11 +48,17 @@ function makeSession(overrides: Partial<Session> = {}): Session {
   };
 }
 
+interface AuditCall {
+  userId: string | null;
+  eventType: string;
+  payload?: Record<string, unknown>;
+}
+
 interface FakeAuthState {
   users: User[];
   revokedTokens: string[];
   resolved: string[];
-  audits: AuditEventInput[];
+  audits: AuditCall[];
   lastToken: string | null;
 }
 
@@ -104,8 +109,8 @@ function createFakeDeps(initialUsers: User[] = []): { deps: AuthDeps; state: Fak
         void reason;
       },
     },
-    auditSink(input) {
-      state.audits.push(input);
+    auditLogger(userId, eventType, payload) {
+      state.audits.push({ userId, eventType, payload });
     },
   };
 
@@ -140,7 +145,7 @@ describe("registerUser", () => {
     expect(state.users).toHaveLength(1);
     expect(state.users[0].email).toBe("new@example.com");
     expect(state.users[0].passwordHash).toBe(fakeHash("Str0ngPass!"));
-    expect(state.audits.map((a) => a.action)).toContain("USER_REGISTERED");
+    expect(state.audits.map((a) => a.eventType)).toContain("USER_REGISTERED");
     expect(cookie.value).toBe("session-token");
   });
 
@@ -161,7 +166,7 @@ describe("registerUser", () => {
 });
 
 describe("loginUser", () => {
-  it("succeeds with valid credentials and audits AUTH_LOGIN_SUCCESS", async () => {
+  it("succeeds with valid credentials and audits LOGIN_SUCCESS", async () => {
     const { deps, state } = createFakeDeps([
       makeUser({ email: "user@example.com", passwordHash: fakeHash("correct-password") }),
     ]);
@@ -171,12 +176,17 @@ describe("loginUser", () => {
       deps,
     );
 
-    expect(state.audits.map((a) => a.action)).toContain("AUTH_LOGIN_SUCCESS");
-    expect(state.audits).not.toContainEqual(expect.objectContaining({ action: "AUTH_LOGIN_FAILED" }));
+    expect(state.audits.map((a) => a.eventType)).toContain("LOGIN_SUCCESS");
+    expect(state.audits).toContainEqual(
+      expect.objectContaining({ eventType: "LOGIN_SUCCESS", userId: "user-id" }),
+    );
+    expect(
+      state.audits.map((a) => a.eventType),
+    ).not.toContain("LOGIN_FAILED");
     expect(cookie.value).toBe("session-token");
   });
 
-  it("fails with a wrong password, audits AUTH_LOGIN_FAILED, and issues no session", async () => {
+  it("fails with a wrong password, audits LOGIN_FAILED, and issues no session", async () => {
     const { deps, state } = createFakeDeps([
       makeUser({ email: "user@example.com", passwordHash: fakeHash("correct-password") }),
     ]);
@@ -185,11 +195,14 @@ describe("loginUser", () => {
       loginUser({ email: "user@example.com", password: "wrong-password" }, deps),
     ).rejects.toBeInstanceOf(InvalidCredentialsError);
 
-    expect(state.audits.map((a) => a.action)).toContain("AUTH_LOGIN_FAILED");
+    expect(state.audits.map((a) => a.eventType)).toContain("LOGIN_FAILED");
+    expect(state.audits).toContainEqual(
+      expect.objectContaining({ eventType: "LOGIN_FAILED", userId: "user-id" }),
+    );
     expect(state.lastToken).toBeNull();
   });
 
-  it("fails with unknown email but still performs a dummy verify (timing equalization)", async () => {
+  it("fails with unknown email, audits LOGIN_FAILED with null userId, but still performs a dummy verify (timing equalization)", async () => {
     const { deps, state } = createFakeDeps();
 
     let dummyVerified = false;
@@ -209,8 +222,9 @@ describe("loginUser", () => {
     expect(dummyVerified).toBe(true);
     expect(state.audits).toContainEqual(
       expect.objectContaining({
-        action: "AUTH_LOGIN_FAILED",
-        metadata: { email: "missing@example.com" },
+        eventType: "LOGIN_FAILED",
+        userId: null,
+        payload: { email: "missing@example.com" },
       }),
     );
   });
@@ -232,7 +246,7 @@ describe("verifyLoginCredentials", () => {
   });
 
   it("throws on invalid credentials", async () => {
-    const { deps } = createFakeDeps([
+    const { deps, state } = createFakeDeps([
       makeUser({ email: "user@example.com", passwordHash: fakeHash("correct-password") }),
     ]);
 
@@ -242,6 +256,8 @@ describe("verifyLoginCredentials", () => {
         deps,
       ),
     ).rejects.toBeInstanceOf(InvalidCredentialsError);
+
+    expect(state.audits.map((a) => a.eventType)).toContain("LOGIN_FAILED");
   });
 });
 
@@ -253,7 +269,7 @@ describe("logoutUser / session revocation", () => {
 
     expect(state.revokedTokens).toContain("session-token");
     expect(cookie.value).toBe("");
-    expect(state.audits.map((a) => a.action)).toContain("AUTH_LOGOUT");
+    expect(state.audits.map((a) => a.eventType)).toContain("AUTH_LOGOUT");
   });
 
   it("getCurrentUser resolves the owning user from an active token", async () => {

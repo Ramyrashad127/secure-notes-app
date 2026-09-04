@@ -5,6 +5,7 @@ import { toSessionCookie, type SessionCookie } from "@/lib/auth/auth-service";
 import {
   createSession as defaultCreateSession,
 } from "@/lib/auth/session";
+import { logAuditEvent, type AuditLogger } from "@/lib/audit/audit-service";
 import {
   decryptSecret as defaultDecryptSecret,
   encryptSecret as defaultEncryptSecret,
@@ -85,6 +86,7 @@ export interface TwoFactorDeps {
     create(userId: string): Promise<{ token: string }>;
   };
   crypto: TwoFactorCrypto;
+  auditLogger: AuditLogger;
 }
 
 const defaultDeps: TwoFactorDeps = {
@@ -108,6 +110,9 @@ const defaultDeps: TwoFactorDeps = {
     verifyTotp: defaultVerifyTotp,
     generateRecoveryCodes: defaultGenerateRecoveryCodes,
     hashRecoveryCode: defaultHashRecoveryCode,
+  },
+  auditLogger: (userId, eventType, payload) => {
+    void logAuditEvent(userId, eventType, payload);
   },
 };
 
@@ -154,6 +159,7 @@ export async function verifyAndEnableTwoFactor(
     twoFactorEnabled: true,
     twoFactorBackupCodes: hashes,
   });
+  deps.auditLogger(userId, "2FA_ENABLED", { method: "totp", userId });
   return recoveryCodes;
 }
 
@@ -169,6 +175,7 @@ export async function verifyLoginChallenge(
   if (!deps.crypto.verifyTotp(secret, code)) throw new InvalidTwoFactorCodeError();
 
   const { token } = await deps.sessionStore.create(userId);
+  deps.auditLogger(userId, "LOGIN_SUCCESS", { method: "totp", userId });
   return toSessionCookie(token);
 }
 
@@ -190,7 +197,10 @@ export async function consumeRecoveryCode(
   const remaining = hashes.filter((hash) => hash.toLowerCase() !== incomingHash);
   await deps.userStore.updateTwoFactor(userId, { twoFactorBackupCodes: remaining });
 
+  deps.auditLogger(userId, "RECOVERY_CODE_USED", { userId });
+
   const { token } = await deps.sessionStore.create(userId);
+  deps.auditLogger(userId, "LOGIN_SUCCESS", { method: "recovery", userId });
   return toSessionCookie(token);
 }
 
@@ -204,4 +214,5 @@ export async function disableTwoFactor(
     twoFactorSecretEncrypted: null,
     twoFactorBackupCodes: null,
   });
+  deps.auditLogger(userId, "2FA_DISABLED", { userId });
 }

@@ -8,7 +8,7 @@ import {
   revokeSession as defaultRevokeSession,
   SESSION_COOKIE_NAME,
 } from "@/lib/auth/session";
-import { audit as defaultAudit, type AuditEventInput } from "@/lib/audit";
+import { logAuditEvent, type AuditLogger } from "@/lib/audit/audit-service";
 import type { LoginInput, RegisterInput } from "@/lib/validations/auth";
 
 export class AuthError extends Error {
@@ -91,7 +91,7 @@ export interface AuthDeps {
     resolve(token: string): Promise<Session | null>;
     revoke(token: string, reason?: string): Promise<void>;
   };
-  auditSink: (input: AuditEventInput) => void;
+  auditLogger: AuditLogger;
 }
 
 const defaultDeps: AuthDeps = {
@@ -119,7 +119,9 @@ const defaultDeps: AuthDeps = {
     resolve: defaultGetSession,
     revoke: defaultRevokeSession,
   },
-  auditSink: defaultAudit,
+  auditLogger: (userId, eventType, payload) => {
+    void logAuditEvent(userId, eventType, payload);
+  },
 };
 
 export async function registerUser(
@@ -137,11 +139,10 @@ export async function registerUser(
     passwordHash,
   });
 
-  deps.auditSink({
-    userId: user.id,
-    action: "USER_REGISTERED",
+  deps.auditLogger(user.id, "USER_REGISTERED", {
     entityType: "user",
     entityId: user.id,
+    email: user.email,
   });
 
   const { token } = await deps.sessionStore.create(user.id);
@@ -156,31 +157,20 @@ export async function loginUser(
 
   if (!user) {
     await deps.passwordStore.verify(data.password, DUMMY_HASH).catch(() => false);
-    deps.auditSink({
-      action: "AUTH_LOGIN_FAILED",
-      entityType: "user",
-      metadata: { email: data.email },
-    });
+    deps.auditLogger(null, "LOGIN_FAILED", { email: data.email });
     throw new InvalidCredentialsError();
   }
 
   const passwordValid = await deps.passwordStore.verify(data.password, user.passwordHash);
 
   if (!passwordValid) {
-    deps.auditSink({
-      userId: user.id,
-      action: "AUTH_LOGIN_FAILED",
-      entityType: "user",
-      entityId: user.id,
-    });
+    deps.auditLogger(user.id, "LOGIN_FAILED", { email: user.email });
     throw new InvalidCredentialsError();
   }
 
-  deps.auditSink({
-    userId: user.id,
-    action: "AUTH_LOGIN_SUCCESS",
-    entityType: "user",
-    entityId: user.id,
+  deps.auditLogger(user.id, "LOGIN_SUCCESS", {
+    email: user.email,
+    method: "password",
   });
 
   const { token } = await deps.sessionStore.create(user.id);
@@ -200,23 +190,14 @@ export async function verifyLoginCredentials(
 
   if (!user) {
     await deps.passwordStore.verify(data.password, DUMMY_HASH).catch(() => false);
-    deps.auditSink({
-      action: "AUTH_LOGIN_FAILED",
-      entityType: "user",
-      metadata: { email: data.email },
-    });
+    deps.auditLogger(null, "LOGIN_FAILED", { email: data.email });
     throw new InvalidCredentialsError();
   }
 
   const passwordValid = await deps.passwordStore.verify(data.password, user.passwordHash);
 
   if (!passwordValid) {
-    deps.auditSink({
-      userId: user.id,
-      action: "AUTH_LOGIN_FAILED",
-      entityType: "user",
-      entityId: user.id,
-    });
+    deps.auditLogger(user.id, "LOGIN_FAILED", { email: user.email });
     throw new InvalidCredentialsError();
   }
 
@@ -229,11 +210,9 @@ export async function logoutUser(
 ): Promise<SessionCookie> {
   const session = await deps.sessionStore.resolve(token);
   await deps.sessionStore.revoke(token, "logout");
-  deps.auditSink({
-    userId: session?.userId,
-    action: "AUTH_LOGOUT",
+  deps.auditLogger(session?.userId ?? null, "AUTH_LOGOUT", {
     entityType: "user",
-    entityId: session?.userId,
+    entityId: session?.userId ?? null,
   });
   return clearSessionCookie();
 }

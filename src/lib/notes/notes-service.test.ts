@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import type { AuditEventInput } from "@/lib/audit";
 import type { Note, NoteVersion } from "@/db/schema";
 import {
   ConflictError,
@@ -42,11 +41,17 @@ function makeVersion(overrides: Partial<NoteVersion> = {}): NoteVersion {
   };
 }
 
+interface AuditCall {
+  userId: string | null;
+  eventType: string;
+  payload?: Record<string, unknown>;
+}
+
 interface FakeState {
   notes: Note[];
   versions: NoteVersion[];
   sessions: Map<string, string>;
-  audits: AuditEventInput[];
+  audits: AuditCall[];
 }
 
 function createFakeDeps(): { deps: Required<NotesDeps>; state: FakeState } {
@@ -118,8 +123,8 @@ function createFakeDeps(): { deps: Required<NotesDeps>; state: FakeState } {
         return userId ? { userId } : null;
       },
     },
-    auditSink(input) {
-      state.audits.push(input);
+    auditLogger(userId, eventType, payload) {
+      state.audits.push({ userId, eventType, payload });
     },
   };
 
@@ -172,10 +177,8 @@ describe("notes service: createNote", () => {
     expect(state.audits).toContainEqual(
       expect.objectContaining({
         userId: "user-a",
-        action: "NOTE_CREATED",
-        entityType: "note",
-        entityId: note.id,
-        metadata: { title: "Grocery" },
+        eventType: "NOTE_CREATED",
+        payload: { noteId: note.id, title: "Grocery" },
       }),
     );
   });
@@ -274,10 +277,8 @@ describe("notes service: update & soft-delete", () => {
     expect(state.audits).toContainEqual(
       expect.objectContaining({
         userId: "user-a",
-        action: "NOTE_DELETED",
-        entityType: "note",
-        entityId: "n1",
-        metadata: { title: "Shred me" },
+        eventType: "NOTE_DELETED",
+        payload: { noteId: "n1", title: "Shred me" },
       }),
     );
   });
@@ -430,6 +431,8 @@ describe("notes service: version snapshots", () => {
 
     expect(updated.title).toBe("Autosaved");
     expect(state.versions).toHaveLength(1);
+    // No snapshot was created, so NOTE_UPDATED must NOT be logged
+    expect(state.audits.map((a) => a.eventType)).not.toContain("NOTE_UPDATED");
   });
 
   it("snapshots once 30 minutes have passed since the last snapshot even if the note was just autosaved", async () => {
@@ -543,6 +546,13 @@ describe("notes service: version snapshots", () => {
       title: "Manual",
       content: "manual body",
     });
+    expect(state.audits).toContainEqual(
+      expect.objectContaining({
+        userId: "user-a",
+        eventType: "NOTE_UPDATED",
+        payload: { noteId: "n1", title: "Manual" },
+      }),
+    );
   });
 
   it("a follow-up autosave does not snapshot again within 30 minutes of the snapshot", async () => {

@@ -3,9 +3,10 @@
 import * as React from "react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { Settings as SettingsIcon, Trash2 } from "lucide-react"
+import { LogOut, Settings as SettingsIcon, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 
+import { logoutAction } from "@/actions/auth"
 import { deleteNoteAction } from "@/actions/notes"
 import { NewNoteButton } from "@/components/notes/new-note-button"
 import { Button } from "@/components/ui/button"
@@ -25,6 +26,22 @@ import type { Note } from "@/db/schema"
 
 export function NoteList({ notes }: { notes: Note[] }) {
   const pathname = usePathname()
+  const router = useRouter()
+  const [isLoggingOut, startLogoutTransition] = React.useTransition()
+
+  function handleLogout() {
+    startLogoutTransition(async () => {
+      const result = await logoutAction()
+
+      if (!result.success) {
+        toast.error(result.error)
+        return
+      }
+
+      router.push("/login")
+      router.refresh()
+    })
+  }
 
   return (
     <div className="flex h-full flex-col gap-3 p-3">
@@ -46,13 +63,24 @@ export function NoteList({ notes }: { notes: Note[] }) {
           </ul>
         )}
       </ScrollArea>
-      <Link
-        href="/settings"
-        className="inline-flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
-      >
-        <SettingsIcon aria-hidden className="size-4" />
-        Settings
-      </Link>
+      <div className="flex flex-col gap-1">
+        <Link
+          href="/settings"
+          className="inline-flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+        >
+          <SettingsIcon aria-hidden className="size-4" />
+          Settings
+        </Link>
+        <Button
+          variant="ghost"
+          className="justify-start gap-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+          onClick={handleLogout}
+          disabled={isLoggingOut}
+        >
+          <LogOut aria-hidden className="size-4" />
+          {isLoggingOut ? "Logging out…" : "Log out"}
+        </Button>
+      </div>
     </div>
   )
 }

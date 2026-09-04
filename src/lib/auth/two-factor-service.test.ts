@@ -34,6 +34,11 @@ interface FakeState {
   users: User[];
   createdSessions: string[];
   secret: string;
+  audits: Array<{
+    userId: string | null;
+    eventType: string;
+    payload?: Record<string, unknown>;
+  }>;
 }
 
 function createFakeDeps(initialUser: User): { deps: TwoFactorDeps; state: FakeState } {
@@ -41,6 +46,7 @@ function createFakeDeps(initialUser: User): { deps: TwoFactorDeps; state: FakeSt
     users: [initialUser],
     createdSessions: [],
     secret: "JBSWY3DPEHPK3PXP",
+    audits: [],
   };
 
   const deps: TwoFactorDeps = {
@@ -80,6 +86,9 @@ function createFakeDeps(initialUser: User): { deps: TwoFactorDeps; state: FakeSt
         "JJJJ-JJJJ-JJJJ-JJJJ",
       ],
       hashRecoveryCode: (code) => Promise.resolve(`hash:${code.toLowerCase()}`),
+    },
+    auditLogger(userId, eventType, payload) {
+      state.audits.push({ userId, eventType, payload });
     },
   };
 
@@ -132,6 +141,10 @@ describe("verifyAndEnableTwoFactor", () => {
       codes.map((c) => `hash:${c.toLowerCase()}`),
     );
     expect(state.users[0].twoFactorBackupCodes![0]).not.toContain("AAAA");
+
+    expect(state.audits).toContainEqual(
+      expect.objectContaining({ eventType: "2FA_ENABLED", userId: "user-id" }),
+    );
   });
 
   it("rejects an invalid code and does not enable 2FA", async () => {
@@ -168,6 +181,14 @@ describe("verifyLoginChallenge", () => {
     expect(state.createdSessions).toContain("user-id");
     expect(cookie.name).toBe("session");
     expect(cookie.value).toBe("session-token");
+
+    expect(state.audits).toContainEqual(
+      expect.objectContaining({
+        eventType: "LOGIN_SUCCESS",
+        userId: "user-id",
+        payload: { method: "totp", userId: "user-id" },
+      }),
+    );
   });
 
   it("rejects an invalid code", async () => {
@@ -210,6 +231,15 @@ describe("consumeRecoveryCode", () => {
     expect(state.users[0].twoFactorBackupCodes).toEqual([
       "hash:bbbb-bbbb-bbbb-bbbb",
     ]);
+    expect(state.audits).toContainEqual(
+      expect.objectContaining({ eventType: "RECOVERY_CODE_USED", userId: "user-id" }),
+    );
+    expect(state.audits).toContainEqual(
+      expect.objectContaining({
+        eventType: "LOGIN_SUCCESS",
+        payload: { method: "recovery", userId: "user-id" },
+      }),
+    );
   });
 
   it("rejects an unknown code", async () => {
@@ -262,6 +292,9 @@ describe("disableTwoFactor", () => {
     expect(state.users[0].twoFactorEnabled).toBe(false);
     expect(state.users[0].twoFactorSecretEncrypted).toBeNull();
     expect(state.users[0].twoFactorBackupCodes).toBeNull();
+    expect(state.audits).toContainEqual(
+      expect.objectContaining({ eventType: "2FA_DISABLED", userId: "user-id" }),
+    );
   });
 
   it("throws for an unknown user", async () => {
