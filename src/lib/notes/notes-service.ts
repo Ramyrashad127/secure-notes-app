@@ -6,7 +6,7 @@ import {
   type Note,
   type NoteVersion,
 } from "@/db/schema";
-import { audit as defaultAudit, type AuditEventInput } from "@/lib/audit";
+import { logAuditEvent, type AuditLogger } from "@/lib/audit/audit-service";
 import { getSession } from "@/lib/auth/session";
 import type { CreateNoteInput } from "@/lib/validations/notes";
 
@@ -63,7 +63,7 @@ export interface NotesDeps {
   noteStore?: NoteStore;
   versionStore?: VersionStore;
   sessionStore?: SessionStore;
-  auditSink?: (input: AuditEventInput) => void;
+  auditLogger?: AuditLogger;
 }
 
 const defaultDeps: Required<NotesDeps> = {
@@ -127,7 +127,9 @@ const defaultDeps: Required<NotesDeps> = {
       return getSession(token);
     },
   },
-  auditSink: defaultAudit,
+  auditLogger: (userId, eventType, payload) => {
+    void logAuditEvent(userId, eventType, payload);
+  },
 };
 
 async function requireUserId(
@@ -184,13 +186,7 @@ export async function createNote(
     title: input.title,
     content: input.content,
   });
-  deps.auditSink({
-    userId,
-    action: "NOTE_CREATED",
-    entityType: "note",
-    entityId: note.id,
-    metadata: { title: input.title },
-  });
+  deps.auditLogger(userId, "NOTE_CREATED", { noteId: note.id, title: input.title });
   return note;
 }
 
@@ -263,6 +259,13 @@ export async function updateNote(
     snapshotCreated = true;
   }
 
+  if (snapshotCreated) {
+    deps.auditLogger(userId, "NOTE_UPDATED", {
+      noteId,
+      title: updated.title,
+    });
+  }
+
   return { note: updated, snapshotCreated };
 }
 
@@ -275,13 +278,7 @@ export async function deleteNote(
   const note = await deps.noteStore.findByIdAndUserId(noteId, userId);
   if (!note) throw new NoteNotFoundError();
   await deps.noteStore.softDelete(noteId, userId);
-  deps.auditSink({
-    userId,
-    action: "NOTE_DELETED",
-    entityType: "note",
-    entityId: note.id,
-    metadata: { title: note.title },
-  });
+  deps.auditLogger(userId, "NOTE_DELETED", { noteId: note.id, title: note.title });
 }
 
 export async function getNoteVersions(
