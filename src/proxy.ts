@@ -1,7 +1,7 @@
-import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 
 import { SESSION_COOKIE_NAME, getSession } from "@/lib/auth/session";
+import { normalizeHttpRoute, recordHttpRequest } from "@/lib/metrics";
 
 const AUTH_ROUTES = ["/login", "/register"];
 
@@ -18,6 +18,7 @@ function isAuthRoute(pathname: string): boolean {
 }
 
 export async function proxy(request: NextRequest) {
+  const startedAt = performance.now();
   const { pathname } = request.nextUrl;
   const normalizedPathname = trimTrailingSlash(pathname);
 
@@ -25,20 +26,30 @@ export async function proxy(request: NextRequest) {
   const session = token ? await getSession(token) : null;
   const isAuthenticated = session !== null;
 
+  let response: NextResponse;
   if (isProtectedRoute(normalizedPathname) && !isAuthenticated) {
-    return NextResponse.redirect(new URL("/login", request.nextUrl));
-  }
-
-  if (
+    response = NextResponse.redirect(new URL("/login", request.nextUrl));
+  } else if (
     isAuthenticated &&
     (normalizedPathname === "/" || isAuthRoute(normalizedPathname))
   ) {
-    return NextResponse.redirect(new URL("/notes", request.nextUrl));
+    response = NextResponse.redirect(new URL("/notes", request.nextUrl));
+  } else {
+    response = NextResponse.next();
   }
 
-  return NextResponse.next();
+  recordHttpRequest({
+    method: request.method,
+    route: normalizeHttpRoute(normalizedPathname),
+    status: response.status,
+    durationSeconds: (performance.now() - startedAt) / 1000,
+  });
+
+  return response;
 }
 
 export const config = {
-  matcher: ["/notes/:path*", "/login", "/register", "/"],
+  matcher: [
+    "/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:png|jpe?g|gif|svg|webp|ico|css|js|woff2?|ttf|otf)$).*)",
+  ],
 };
