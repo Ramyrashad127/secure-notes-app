@@ -2,6 +2,7 @@ import * as client from "@prometheus-io/client";
 
 declare global {
   var __secureNotesMetrics: SecureNotesMetrics | undefined;
+  var __secureNotesRegistry: client.Registry | undefined;
 }
 
 export interface SecureNotesMetrics {
@@ -44,6 +45,8 @@ function createMetrics(): SecureNotesMetrics {
 
 const metrics = (globalThis.__secureNotesMetrics ??= createMetrics());
 
+export const registry = (globalThis.__secureNotesRegistry ??= client.register);
+
 export const { httpRequestDuration, authEvents, noteOperations, cacheOperations } = metrics;
 
 export type AuthEventLabels = {
@@ -58,26 +61,22 @@ export type NoteOperationLabel =
   | "autosave"
   | "autosave_skipped";
 
-export function recordAuthEvent(labels: AuthEventLabels): void {
+function safeRecord(record: () => void): void {
   try {
-    authEvents.inc(labels);
-  } catch {
-    // no-op: instrumentation must never break the request flow
+    record();
+  } catch (err) {
+    console.error("[METRICS_ERROR]", err);
   }
+}
+
+export function recordAuthEvent(labels: AuthEventLabels): void {
+  safeRecord(() => authEvents.inc(labels));
 }
 
 export function recordNoteOperation(operation: NoteOperationLabel): void {
-  try {
-    noteOperations.inc({ operation });
-  } catch {
-    // no-op: instrumentation must never break the request flow
-  }
+  safeRecord(() => noteOperations.inc({ operation }));
 }
 
 export function recordCacheOperation(result: "hit" | "miss"): void {
-  try {
-    cacheOperations.inc({ result });
-  } catch {
-    // no-op: instrumentation must never break the request flow
-  }
+  safeRecord(() => cacheOperations.inc({ result }));
 }
