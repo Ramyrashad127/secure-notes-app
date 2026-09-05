@@ -1,15 +1,14 @@
 import { NextResponse } from "next/server";
-import * as client from "@prometheus-io/client";
-import "@/lib/metrics";
+import { registry } from "@/lib/metrics";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const metrics = await client.register.metrics();
+  const metrics = await registry.metrics();
 
   return new NextResponse(metrics, {
     headers: {
-      "Content-Type": client.contentType,
+      "Content-Type": registry.contentType,
     },
   });
 }

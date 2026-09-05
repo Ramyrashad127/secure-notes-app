@@ -2,6 +2,7 @@ import * as client from "@prometheus-io/client";
 
 declare global {
   var __secureNotesMetrics: SecureNotesMetrics | undefined;
+  var __secureNotesRegistry: client.Registry | undefined;
 }
 
 export interface SecureNotesMetrics {
@@ -44,4 +45,38 @@ function createMetrics(): SecureNotesMetrics {
 
 const metrics = (globalThis.__secureNotesMetrics ??= createMetrics());
 
+export const registry = (globalThis.__secureNotesRegistry ??= client.register);
+
 export const { httpRequestDuration, authEvents, noteOperations, cacheOperations } = metrics;
+
+export type AuthEventLabels = {
+  type: "login" | "2fa";
+  status: "success" | "failure";
+};
+
+export type NoteOperationLabel =
+  | "create"
+  | "delete"
+  | "update"
+  | "autosave"
+  | "autosave_skipped";
+
+function safeRecord(record: () => void): void {
+  try {
+    record();
+  } catch (err) {
+    console.error("[METRICS_ERROR]", err);
+  }
+}
+
+export function recordAuthEvent(labels: AuthEventLabels): void {
+  safeRecord(() => authEvents.inc(labels));
+}
+
+export function recordNoteOperation(operation: NoteOperationLabel): void {
+  safeRecord(() => noteOperations.inc({ operation }));
+}
+
+export function recordCacheOperation(result: "hit" | "miss"): void {
+  safeRecord(() => cacheOperations.inc({ result }));
+}

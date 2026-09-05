@@ -6,6 +6,7 @@ import {
   createSession as defaultCreateSession,
 } from "@/lib/auth/session";
 import { logAuditEvent, type AuditLogger } from "@/lib/audit/audit-service";
+import { recordAuthEvent } from "@/lib/metrics";
 import {
   decryptSecret as defaultDecryptSecret,
   encryptSecret as defaultEncryptSecret,
@@ -149,7 +150,10 @@ export async function verifyAndEnableTwoFactor(
   const user = await requireUser(userId, deps);
   if (!user.twoFactorSecretEncrypted) throw new TwoFactorSetupIncompleteError();
   const secret = deps.crypto.decryptSecret(user.twoFactorSecretEncrypted);
-  if (!deps.crypto.verifyTotp(secret, code)) throw new InvalidTwoFactorCodeError();
+  if (!deps.crypto.verifyTotp(secret, code)) {
+    recordAuthEvent({ type: "2fa", status: "failure" });
+    throw new InvalidTwoFactorCodeError();
+  }
 
   const recoveryCodes = deps.crypto.generateRecoveryCodes();
   const hashes = await Promise.all(
@@ -160,6 +164,7 @@ export async function verifyAndEnableTwoFactor(
     twoFactorBackupCodes: hashes,
   });
   deps.auditLogger(userId, "2FA_ENABLED", { method: "totp", userId });
+  recordAuthEvent({ type: "2fa", status: "success" });
   return recoveryCodes;
 }
 
@@ -172,10 +177,15 @@ export async function verifyLoginChallenge(
   if (!user.twoFactorEnabled) throw new TwoFactorNotEnabledError();
   if (!user.twoFactorSecretEncrypted) throw new TwoFactorSetupIncompleteError();
   const secret = deps.crypto.decryptSecret(user.twoFactorSecretEncrypted);
-  if (!deps.crypto.verifyTotp(secret, code)) throw new InvalidTwoFactorCodeError();
+  if (!deps.crypto.verifyTotp(secret, code)) {
+    recordAuthEvent({ type: "2fa", status: "failure" });
+    throw new InvalidTwoFactorCodeError();
+  }
 
   const { token } = await deps.sessionStore.create(userId);
   deps.auditLogger(userId, "LOGIN_SUCCESS", { method: "totp", userId });
+  recordAuthEvent({ type: "2fa", status: "success" });
+  recordAuthEvent({ type: "login", status: "success" });
   return toSessionCookie(token);
 }
 
@@ -191,6 +201,7 @@ export async function consumeRecoveryCode(
 
   const incomingHash = (await deps.crypto.hashRecoveryCode(code)).toLowerCase();
   if (!hashes.some((hash) => hash.toLowerCase() === incomingHash)) {
+    recordAuthEvent({ type: "2fa", status: "failure" });
     throw new RecoveryCodeInvalidError();
   }
 
@@ -201,6 +212,8 @@ export async function consumeRecoveryCode(
 
   const { token } = await deps.sessionStore.create(userId);
   deps.auditLogger(userId, "LOGIN_SUCCESS", { method: "recovery", userId });
+  recordAuthEvent({ type: "2fa", status: "success" });
+  recordAuthEvent({ type: "login", status: "success" });
   return toSessionCookie(token);
 }
 
