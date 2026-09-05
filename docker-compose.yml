@@ -51,6 +51,36 @@ services:
       postgres:
         condition: service_healthy
 
+  web:
+    build:
+      context: .
+    container_name: secure-notes-web
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://secure_notes:secure_notes@postgres:5432/secure_notes
+      VALKEY_URL: redis://valkey:6379
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.54.0
+    container_name: secure-notes-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - web
+
 volumes:
   postgres_data:
   valkey_data:
