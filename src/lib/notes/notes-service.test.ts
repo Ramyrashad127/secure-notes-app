@@ -12,7 +12,7 @@ import {
   UnauthorizedError,
   updateNote,
   VersionNotFoundError,
-  type NotesDeps,
+  type NotesServiceDeps,
 } from "./notes-service";
 
 function makeNote(overrides: Partial<Note> = {}): Note {
@@ -54,7 +54,7 @@ interface FakeState {
   audits: AuditCall[];
 }
 
-function createFakeDeps(): { deps: Required<NotesDeps>; state: FakeState } {
+function createFakeDeps(): { deps: NotesServiceDeps; state: FakeState } {
   const state: FakeState = {
     notes: [],
     versions: [],
@@ -62,7 +62,7 @@ function createFakeDeps(): { deps: Required<NotesDeps>; state: FakeState } {
     audits: [],
   };
 
-  const deps: Required<NotesDeps> = {
+  const deps: NotesServiceDeps = {
     noteStore: {
       async listByUserId(userId) {
         return state.notes
@@ -264,6 +264,129 @@ describe("notes service: update & soft-delete", () => {
     expect(updated.content).toBe("New body");
     expect(state.versions).toHaveLength(1);
     expect(state.audits).toHaveLength(0);
+  });
+
+  it("routes note updates and snapshots through the injected transaction", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    state.notes.push(
+      makeNote({
+        id: "n1",
+        userId: "user-a",
+        updatedAt: new Date(Date.now() - 5 * 60 * 1000),
+      }),
+    );
+    state.versions.push(
+      makeVersion({
+        id: "v1",
+        noteId: "n1",
+        userId: "user-a",
+        version: 1,
+        createdAt: new Date(Date.now() - 5 * 60 * 1000),
+      }),
+    );
+
+    const txWrites: string[] = [];
+    const txDeps: NotesServiceDeps = {
+      ...deps,
+      transaction: async (fn) => {
+        txWrites.push("begin");
+        const result = await fn({
+          updateNote: deps.noteStore!.update.bind(deps.noteStore!),
+          insertVersion: deps.versionStore!.insert.bind(deps.versionStore!),
+          createNoteWithVersion: (data) =>
+            deps.versionStore!.insert({
+              noteId: "n1",
+              userId: data.userId,
+              version: 2,
+              title: data.title,
+              content: data.content,
+            }).then(() => state.notes.push(data as never) as never) as never,
+        });
+        txWrites.push("commit");
+        return result;
+      },
+    };
+
+    const { note: updated } = await updateNote(
+      "n1",
+      { title: "Renamed", content: "New body" },
+      "token-a",
+      txDeps,
+    );
+
+    expect(updated.title).toBe("Renamed");
+    expect(txWrites).toEqual(["begin", "commit"]);
+    expect(state.notes[0].title).toBe("Renamed");
+  });
+
+  it("does not commit partial writes when the transaction throws", async () => {
+    const { deps, state } = createFakeDeps();
+    state.sessions.set("token-a", "user-a");
+    const original = makeNote({
+      id: "n1",
+      userId: "user-a",
+      title: "Original",
+      content: "Original body",
+      updatedAt: new Date(Date.now() - 5 * 60 * 1000),
+    });
+    state.notes.push(original);
+    state.versions.push(
+      makeVersion({
+        id: "v1",
+        noteId: "n1",
+        userId: "user-a",
+        version: 1,
+        createdAt: new Date(Date.now() - 5 * 60 * 1000),
+      }),
+    );
+
+    // The injected transaction aborts (rolls back) whenever the callback
+    // throws, mirroring db.transaction semantics.
+    const txDeps: NotesServiceDeps = {
+      ...deps,
+      transaction: async (fn) => {
+        const before = { ...state.notes[0] };
+        try {
+          return await fn({
+            updateNote: async (id, userId, data) => {
+              const updated = await deps.noteStore!.update(id, userId, data);
+              // Assert the write happened inside the tx scope before failure.
+              expect(updated.title).toBe("Changed");
+              return updated;
+            },
+            insertVersion: async () => {
+              throw new Error("snapshot insert failed");
+            },
+            createNoteWithVersion: (data) =>
+              deps.versionStore!.insert({
+                noteId: "n1",
+                userId: data.userId,
+                version: 2,
+                title: data.title,
+                content: data.content,
+              }).then(() => state.notes.push(data as never) as never) as never,
+          });
+        } catch (err) {
+          Object.assign(state.notes[0], before);
+          throw err;
+        }
+      },
+    };
+
+    await expect(
+      updateNote(
+        "n1",
+        { title: "Changed", content: "Broken body", isManualSave: true },
+        "token-a",
+        txDeps,
+      ),
+    ).rejects.toThrow("snapshot insert failed");
+
+    expect(state.notes[0]).toMatchObject({
+      title: "Original",
+      content: "Original body",
+    });
   });
 
   it("soft-deletes the owner's note and emits NOTE_DELETED", async () => {

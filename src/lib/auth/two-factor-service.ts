@@ -7,6 +7,7 @@ import {
 } from "@/lib/auth/session";
 import { logAuditEvent, type AuditLogger } from "@/lib/audit/audit-service";
 import { recordAuthEvent } from "@/lib/metrics";
+import { verifyPassword as defaultVerifyPassword } from "@/lib/auth/password";
 import {
   decryptSecret as defaultDecryptSecret,
   encryptSecret as defaultEncryptSecret,
@@ -18,9 +19,6 @@ import {
 } from "@/lib/two-factor";
 
 export const TWO_FACTOR_ISSUER = "Secure Notes";
-
-/** Cookie identifying the user mid-login while awaiting a 2FA challenge. */
-export const PENDING_2FA_COOKIE = "pending_2fa_user";
 
 export class TwoFactorUserNotFoundError extends Error {
   constructor() {
@@ -57,6 +55,14 @@ export class RecoveryCodeInvalidError extends Error {
   }
 }
 
+/** Thrown when the step-up password does not match during 2FA disable. */
+export class InvalidPasswordFor2FADisableError extends Error {
+  constructor() {
+    super("Your password is incorrect");
+    this.name = "InvalidPasswordFor2FADisableError";
+  }
+}
+
 export interface TwoFactorCrypto {
   generateTotpSecret(): string;
   generateTotpUri(args: {
@@ -87,6 +93,9 @@ export interface TwoFactorDeps {
     create(userId: string): Promise<{ token: string }>;
   };
   crypto: TwoFactorCrypto;
+  passwordStore: {
+    verify(password: string, passwordHash: string): Promise<boolean>;
+  };
   auditLogger: AuditLogger;
 }
 
@@ -111,6 +120,9 @@ const defaultDeps: TwoFactorDeps = {
     verifyTotp: defaultVerifyTotp,
     generateRecoveryCodes: defaultGenerateRecoveryCodes,
     hashRecoveryCode: defaultHashRecoveryCode,
+  },
+  passwordStore: {
+    verify: defaultVerifyPassword,
   },
   auditLogger: (userId, eventType, payload) => {
     void logAuditEvent(userId, eventType, payload);
@@ -219,9 +231,23 @@ export async function consumeRecoveryCode(
 
 export async function disableTwoFactor(
   userId: string,
+  currentPassword: string,
   deps: TwoFactorDeps = defaultDeps,
 ): Promise<void> {
-  await requireUser(userId, deps);
+  const user = await requireUser(userId, deps);
+  const passwordValid = await deps.passwordStore.verify(
+    currentPassword,
+    user.passwordHash,
+  );
+  if (!passwordValid) {
+    recordAuthEvent({
+      type: "2fa",
+      status: "failure",
+      reason: "invalid_password",
+    });
+    throw new InvalidPasswordFor2FADisableError();
+  }
+
   await deps.userStore.updateTwoFactor(userId, {
     twoFactorEnabled: false,
     twoFactorSecretEncrypted: null,

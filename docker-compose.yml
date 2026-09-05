@@ -58,6 +58,8 @@ services:
       context: .
     container_name: secure-notes-web
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgres://secure_notes:secure_notes@postgres:5432/secure_notes
       VALKEY_URL: redis://valkey:6379
@@ -80,6 +82,14 @@ services:
       - "9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    environment:
+      METRICS_TOKEN: ${METRICS_TOKEN}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo -n "$$METRICS_TOKEN" > /etc/prometheus/metrics_token
+        exec /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --web.enable-lifecycle
     depends_on:
       - web
 
