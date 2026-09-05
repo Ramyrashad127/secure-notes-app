@@ -235,6 +235,9 @@ export async function updateNote(
     input.clientUpdatedAt &&
     previousUpdatedAt > input.clientUpdatedAt.getTime()
   ) {
+    if (input.isManualSave !== true) {
+      recordNoteOperation("autosave_failure");
+    }
     throw new ConflictError();
   }
 

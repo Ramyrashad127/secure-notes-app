@@ -1,0 +1,290 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "panels": [],
+      "title": "HTTP / API",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "Total HTTP request throughput by route",
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10, "showPoints": "never" }, "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "id": 1,
+      "title": "HTTP requests /s",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{job=\"web\"}[5m])) by (route)",
+          "legendFormat": "{{route}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "95th percentile request latency by route",
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10, "showPoints": "never" }, "unit": "s" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "id": 2,
+      "title": "Request latency p95",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"web\"}[5m])) by (le, route))",
+          "legendFormat": "{{route}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "HTTP error rate (4xx/5xx) as a percentage of traffic",
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10, "showPoints": "never" }, "unit": "percentunit" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "id": 3,
+      "title": "HTTP error rate",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(http_errors_total{job=\"web\"}[5m])) / clamp_min(sum(rate(http_requests_total{job=\"web\"}[5m])), 0.000001)",
+          "legendFormat": "error rate",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "Breakdown of 4xx/5xx responses by status class",
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10, "showPoints": "never" }, "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "id": 4,
+      "title": "HTTP errors by status class",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(http_errors_total{job=\"web\"}[5m])) by (status_class)",
+          "legendFormat": "{{status_class}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+      "id": 200,
+      "panels": [],
+      "title": "Business events",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "Authentication events (logins and 2FA) by type and status",
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10, "showPoints": "never" }, "unit": "ops" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "id": 5,
+      "title": "Auth events /s",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(auth_events_total{job=\"web\"}[5m])) by (type, status)",
+          "legendFormat": "{{type}}/{{status}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "Authentication failure breakdown by explicit reason",
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10, "showPoints": "never" }, "unit": "ops" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "id": 6,
+      "title": "Auth failures by reason /s",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(auth_events_total{status=\"failure\"}[5m])) by (reason)",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "Note operations by operation label",
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10, "showPoints": "never" }, "unit": "ops" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "id": 7,
+      "title": "Note operations /s",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(note_operations_total{job=\"web\"}[5m])) by (operation)",
+          "legendFormat": "{{operation}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "Valkey session-cache operations by result",
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10, "showPoints": "never" }, "unit": "ops" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
+      "id": 8,
+      "title": "Cache operations /s",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(cache_operations_total{job=\"web\"}[5m])) by (result)",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
+      "id": 300,
+      "panels": [],
+      "title": "PostgreSQL",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "95th percentile PostgreSQL query duration by statement type",
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10, "showPoints": "never" }, "unit": "s" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 35 },
+      "id": 9,
+      "title": "DB query latency p95",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(db_query_duration_seconds_bucket[5m])) by (le, statement))",
+          "legendFormat": "{{statement}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "Database query throughput by statement type and status",
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10, "showPoints": "never" }, "unit": "ops" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 35 },
+      "id": 10,
+      "title": "DB queries /s",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(db_queries_total[5m])) by (statement, status)",
+          "legendFormat": "{{statement}}/{{status}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "Active PostgreSQL connections",
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10, "showPoints": "never" }, "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 43 },
+      "id": 11,
+      "title": "DB active connections",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "db_active_connections",
+          "legendFormat": "active",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "Queries currently in flight by statement type",
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10, "showPoints": "never" }, "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 43 },
+      "id": 12,
+      "title": "DB queries in flight",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "db_queries_in_flight",
+          "legendFormat": "{{statement}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["secure-notes", "telemetry"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Secure Notes Telemetry",
+  "uid": "secure-notes-telemetry",
+  "version": 1,
+  "weekStart": ""
+}

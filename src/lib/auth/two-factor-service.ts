@@ -151,7 +151,7 @@ export async function verifyAndEnableTwoFactor(
   if (!user.twoFactorSecretEncrypted) throw new TwoFactorSetupIncompleteError();
   const secret = deps.crypto.decryptSecret(user.twoFactorSecretEncrypted);
   if (!deps.crypto.verifyTotp(secret, code)) {
-    recordAuthEvent({ type: "2fa", status: "failure" });
+    recordAuthEvent({ type: "2fa", status: "failure", reason: "invalid_code" });
     throw new InvalidTwoFactorCodeError();
   }
 
@@ -164,7 +164,7 @@ export async function verifyAndEnableTwoFactor(
     twoFactorBackupCodes: hashes,
   });
   deps.auditLogger(userId, "2FA_ENABLED", { method: "totp", userId });
-  recordAuthEvent({ type: "2fa", status: "success" });
+  recordAuthEvent({ type: "2fa", status: "success", reason: "" });
   return recoveryCodes;
 }
 
@@ -178,14 +178,14 @@ export async function verifyLoginChallenge(
   if (!user.twoFactorSecretEncrypted) throw new TwoFactorSetupIncompleteError();
   const secret = deps.crypto.decryptSecret(user.twoFactorSecretEncrypted);
   if (!deps.crypto.verifyTotp(secret, code)) {
-    recordAuthEvent({ type: "2fa", status: "failure" });
+    recordAuthEvent({ type: "2fa", status: "failure", reason: "invalid_code" });
     throw new InvalidTwoFactorCodeError();
   }
 
   const { token } = await deps.sessionStore.create(userId);
   deps.auditLogger(userId, "LOGIN_SUCCESS", { method: "totp", userId });
-  recordAuthEvent({ type: "2fa", status: "success" });
-  recordAuthEvent({ type: "login", status: "success" });
+  recordAuthEvent({ type: "2fa", status: "success", reason: "" });
+  recordAuthEvent({ type: "login", status: "success", reason: "" });
   return toSessionCookie(token);
 }
 
@@ -201,7 +201,7 @@ export async function consumeRecoveryCode(
 
   const incomingHash = (await deps.crypto.hashRecoveryCode(code)).toLowerCase();
   if (!hashes.some((hash) => hash.toLowerCase() === incomingHash)) {
-    recordAuthEvent({ type: "2fa", status: "failure" });
+    recordAuthEvent({ type: "2fa", status: "failure", reason: "invalid_recovery_code" });
     throw new RecoveryCodeInvalidError();
   }
 
@@ -212,8 +212,8 @@ export async function consumeRecoveryCode(
 
   const { token } = await deps.sessionStore.create(userId);
   deps.auditLogger(userId, "LOGIN_SUCCESS", { method: "recovery", userId });
-  recordAuthEvent({ type: "2fa", status: "success" });
-  recordAuthEvent({ type: "login", status: "success" });
+  recordAuthEvent({ type: "2fa", status: "success", reason: "" });
+  recordAuthEvent({ type: "login", status: "success", reason: "" });
   return toSessionCookie(token);
 }
 
