@@ -9,6 +9,7 @@ import {
   SESSION_COOKIE_NAME,
 } from "@/lib/auth/session";
 import { logAuditEvent, type AuditLogger } from "@/lib/audit/audit-service";
+import { recordAuthEvent } from "@/lib/metrics";
 import type { LoginInput, RegisterInput } from "@/lib/validations/auth";
 
 export class AuthError extends Error {
@@ -158,6 +159,7 @@ export async function loginUser(
   if (!user) {
     await deps.passwordStore.verify(data.password, DUMMY_HASH).catch(() => false);
     deps.auditLogger(null, "LOGIN_FAILED", { email: data.email });
+    recordAuthEvent({ type: "login", status: "failure" });
     throw new InvalidCredentialsError();
   }
 
@@ -165,6 +167,7 @@ export async function loginUser(
 
   if (!passwordValid) {
     deps.auditLogger(user.id, "LOGIN_FAILED", { email: user.email });
+    recordAuthEvent({ type: "login", status: "failure" });
     throw new InvalidCredentialsError();
   }
 
@@ -172,6 +175,7 @@ export async function loginUser(
     email: user.email,
     method: "password",
   });
+  recordAuthEvent({ type: "login", status: "success" });
 
   const { token } = await deps.sessionStore.create(user.id);
   return toSessionCookie(token);
@@ -191,6 +195,7 @@ export async function verifyLoginCredentials(
   if (!user) {
     await deps.passwordStore.verify(data.password, DUMMY_HASH).catch(() => false);
     deps.auditLogger(null, "LOGIN_FAILED", { email: data.email });
+    recordAuthEvent({ type: "login", status: "failure" });
     throw new InvalidCredentialsError();
   }
 
@@ -198,6 +203,7 @@ export async function verifyLoginCredentials(
 
   if (!passwordValid) {
     deps.auditLogger(user.id, "LOGIN_FAILED", { email: user.email });
+    recordAuthEvent({ type: "login", status: "failure" });
     throw new InvalidCredentialsError();
   }
 

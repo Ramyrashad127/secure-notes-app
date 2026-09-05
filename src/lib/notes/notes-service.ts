@@ -8,6 +8,7 @@ import {
 } from "@/db/schema";
 import { logAuditEvent, type AuditLogger } from "@/lib/audit/audit-service";
 import { getSession } from "@/lib/auth/session";
+import { recordNoteOperation } from "@/lib/metrics";
 import type { CreateNoteInput } from "@/lib/validations/notes";
 
 export class UnauthorizedError extends Error {
@@ -187,6 +188,7 @@ export async function createNote(
     content: input.content,
   });
   deps.auditLogger(userId, "NOTE_CREATED", { noteId: note.id, title: input.title });
+  recordNoteOperation("create");
   return note;
 }
 
@@ -221,9 +223,11 @@ export async function updateNote(
 
   if (input.isManualSave === true) {
     if (matchesLatestSnapshot) {
+      recordNoteOperation("autosave_skipped");
       return { note: current, snapshotCreated: false };
     }
   } else if (matchesLive) {
+    recordNoteOperation("autosave_skipped");
     return { note: current, snapshotCreated: false };
   }
 
@@ -266,6 +270,12 @@ export async function updateNote(
     });
   }
 
+  if (input.isManualSave === true) {
+    recordNoteOperation("update");
+  } else {
+    recordNoteOperation("autosave");
+  }
+
   return { note: updated, snapshotCreated };
 }
 
@@ -279,6 +289,7 @@ export async function deleteNote(
   if (!note) throw new NoteNotFoundError();
   await deps.noteStore.softDelete(noteId, userId);
   deps.auditLogger(userId, "NOTE_DELETED", { noteId: note.id, title: note.title });
+  recordNoteOperation("delete");
 }
 
 export async function getNoteVersions(

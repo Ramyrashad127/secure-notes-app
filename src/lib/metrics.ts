@@ -45,3 +45,39 @@ function createMetrics(): SecureNotesMetrics {
 const metrics = (globalThis.__secureNotesMetrics ??= createMetrics());
 
 export const { httpRequestDuration, authEvents, noteOperations, cacheOperations } = metrics;
+
+export type AuthEventLabels = {
+  type: "login" | "2fa";
+  status: "success" | "failure";
+};
+
+export type NoteOperationLabel =
+  | "create"
+  | "delete"
+  | "update"
+  | "autosave"
+  | "autosave_skipped";
+
+export function recordAuthEvent(labels: AuthEventLabels): void {
+  try {
+    authEvents.inc(labels);
+  } catch {
+    // no-op: instrumentation must never break the request flow
+  }
+}
+
+export function recordNoteOperation(operation: NoteOperationLabel): void {
+  try {
+    noteOperations.inc({ operation });
+  } catch {
+    // no-op: instrumentation must never break the request flow
+  }
+}
+
+export function recordCacheOperation(result: "hit" | "miss"): void {
+  try {
+    cacheOperations.inc({ result });
+  } catch {
+    // no-op: instrumentation must never break the request flow
+  }
+}

@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { sessions, type Session } from "@/db/schema";
 import { valkey } from "@/lib/valkey";
+import { recordCacheOperation } from "@/lib/metrics";
 
 export const SESSION_COOKIE_NAME = "session";
 export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 14;
@@ -150,10 +151,12 @@ export async function getSession(
 
   const cached = await getCachedSession(tokenHash, deps.valkeyStore);
   if (cached) {
+    recordCacheOperation("hit");
     if (!isSessionValid(cached, now)) return null;
     return cached;
   }
 
+  recordCacheOperation("miss");
   const session = await deps.dbStore.findByTokenHash(tokenHash);
   if (!session || !isSessionValid(session, now)) return null;
 
