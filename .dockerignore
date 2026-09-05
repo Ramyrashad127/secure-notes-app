@@ -1,0 +1,24 @@
+# context
+node_modules
+.next
+out
+coverage
+
+# git
+.git
+.gitignore
+
+# env
+.env*
+
+# logs
+*.log
+
+# docker
+Dockerfile
+docker-compose.yml
+
+# test artifacts
+test-results
+playwright-report
+blob-report
