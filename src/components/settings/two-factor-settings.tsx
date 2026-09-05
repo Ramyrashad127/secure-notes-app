@@ -43,6 +43,7 @@ export function TwoFactorSettings({ enabled }: { enabled: boolean }) {
   const [qrDataUrl, setQrDataUrl] = React.useState<string | null>(null)
   const [secret, setSecret] = React.useState<string | null>(null)
   const [code, setCode] = React.useState("")
+  const [disablePassword, setDisablePassword] = React.useState("")
   const [recoveryCodes, setRecoveryCodes] = React.useState<string[] | null>(null)
   const [isPending, startTransition] = React.useTransition()
 
@@ -90,7 +91,7 @@ export function TwoFactorSettings({ enabled }: { enabled: boolean }) {
 
   function handleDisable() {
     startTransition(async () => {
-      const result = await disable2FA()
+      const result = await disable2FA(disablePassword)
       if (!result.success) {
         toast.error(result.error)
         return
@@ -99,6 +100,7 @@ export function TwoFactorSettings({ enabled }: { enabled: boolean }) {
       setUri(null)
       setSecret(null)
       setRecoveryCodes(null)
+      setDisablePassword("")
       toast.success("Two-factor authentication disabled")
       router.refresh()
     })
@@ -155,7 +157,12 @@ export function TwoFactorSettings({ enabled }: { enabled: boolean }) {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <DisableTwoFactorDialog onConfirm={handleDisable} isPending={isPending} />
+          <DisableTwoFactorDialog
+            onConfirm={handleDisable}
+            isPending={isPending}
+            password={disablePassword}
+            onPasswordChange={setDisablePassword}
+          />
         </CardContent>
       </Card>
     )
@@ -244,9 +251,13 @@ export function TwoFactorSettings({ enabled }: { enabled: boolean }) {
 function DisableTwoFactorDialog({
   onConfirm,
   isPending,
+  password,
+  onPasswordChange,
 }: {
   onConfirm: () => void
   isPending: boolean
+  password: string
+  onPasswordChange: (value: string) => void
 }) {
   return (
     <Dialog>
@@ -268,12 +279,24 @@ function DisableTwoFactorDialog({
             password to sign in.
           </DialogDescription>
         </DialogHeader>
+        <div className="space-y-2">
+          <Label htmlFor="2fa-disable-password">Current password</Label>
+          <Input
+            id="2fa-disable-password"
+            type="password"
+            autoComplete="current-password"
+            placeholder="Enter your password to confirm"
+            value={password}
+            onChange={(event) => onPasswordChange(event.target.value)}
+            disabled={isPending}
+          />
+        </div>
         <DialogFooter>
           <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
           <Button
             variant="destructive"
             onClick={onConfirm}
-            disabled={isPending}
+            disabled={isPending || !password}
           >
             {isPending ? "Disabling…" : "Disable 2FA"}
           </Button>

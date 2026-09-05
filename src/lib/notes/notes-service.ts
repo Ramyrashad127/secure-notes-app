@@ -65,6 +65,39 @@ export interface NotesDeps {
   versionStore?: VersionStore;
   sessionStore?: SessionStore;
   auditLogger?: AuditLogger;
+  /**
+   * Run a write callback inside a DB transaction. Defaults to `db.transaction`.
+   * When omitted (e.g. unit-test fakes), writes fall back to the store closures.
+   */
+  transaction?: <T>(fn: (tx: TransactionClient) => Promise<T>) => Promise<T>;
+}
+
+/**
+ * The deps shape the service needs at runtime: the core stores are required,
+ * while `transaction` remains optional (tests omit it and run stores directly).
+ */
+export type NotesServiceDeps = Omit<Required<NotesDeps>, "transaction"> &
+  Pick<NotesDeps, "transaction">;
+
+/** Holds the transaction-scoped data-access closures used inside db.transaction. */
+export interface TransactionClient {
+  updateNote(
+    id: string,
+    userId: string,
+    data: { title: string; content: string },
+  ): Promise<Note>;
+  insertVersion(data: {
+    noteId: string;
+    userId: string;
+    version: number;
+    title: string;
+    content: string;
+  }): Promise<NoteVersion>;
+  createNoteWithVersion(data: {
+    userId: string;
+    title: string;
+    content: string;
+  }): Promise<Note>;
 }
 
 const defaultDeps: Required<NotesDeps> = {
@@ -131,21 +164,97 @@ const defaultDeps: Required<NotesDeps> = {
   auditLogger: (userId, eventType, payload) => {
     void logAuditEvent(userId, eventType, payload);
   },
+  transaction: (fn) =>
+    db.transaction((tx) => {
+      const txClient: TransactionClient = {
+        async updateNote(id, userId, data) {
+          const [note] = await tx
+            .update(notes)
+            .set({ ...data, updatedAt: new Date() })
+            .where(
+              and(
+                eq(notes.id, id),
+                eq(notes.userId, userId),
+                isNull(notes.deletedAt),
+              ),
+            )
+            .returning();
+          if (!note) throw new NoteNotFoundError();
+          return note;
+        },
+        async insertVersion(data) {
+          const [version] = await tx.insert(noteVersions).values(data).returning();
+          if (!version) throw new Error("Failed to create note version");
+          return version;
+        },
+        async createNoteWithVersion(data) {
+          const [note] = await tx.insert(notes).values(data).returning();
+          if (!note) throw new Error("Failed to create note");
+          const [version] = await tx
+            .insert(noteVersions)
+            .values({
+              noteId: note.id,
+              userId: data.userId,
+              version: 1,
+              title: data.title,
+              content: data.content,
+            })
+            .returning();
+          if (!version) throw new Error("Failed to create note version");
+          return note;
+        },
+      };
+      return fn(txClient);
+    }),
 };
 
 async function requireUserId(
   token: string,
-  deps: Required<NotesDeps>,
+  deps: NotesServiceDeps,
 ): Promise<string> {
   const session = await deps.sessionStore.resolve(token);
   if (!session) throw new UnauthorizedError();
   return session.userId;
 }
 
+function buildTransactionClient(deps: NotesServiceDeps): TransactionClient {
+  const txClient: TransactionClient = {
+    async updateNote(id, userId, data) {
+      return deps.noteStore.update(id, userId, data);
+    },
+    async insertVersion(data) {
+      return deps.versionStore.insert(data);
+    },
+    async createNoteWithVersion(data) {
+      const note = await deps.noteStore.insert(data);
+      await deps.versionStore.insert({
+        noteId: note.id,
+        userId: data.userId,
+        version: 1,
+        title: data.title,
+        content: data.content,
+      });
+      return note;
+    },
+  };
+  return txClient;
+}
+
+/** Run writes inside the injected transaction, or fall back to store closures. */
+async function runInTransaction<T>(
+  deps: NotesServiceDeps,
+  fn: (tx: TransactionClient) => Promise<T>,
+): Promise<T> {
+  if (deps.transaction) {
+    return deps.transaction(fn);
+  }
+  return fn(buildTransactionClient(deps));
+}
+
 async function requireOwnedNote(
   noteId: string,
   userId: string,
-  deps: Required<NotesDeps>,
+  deps: NotesServiceDeps,
 ): Promise<Note> {
   const note = await deps.noteStore.findByIdAndUserId(noteId, userId);
   if (!note) throw new NoteNotFoundError();
@@ -154,7 +263,7 @@ async function requireOwnedNote(
 
 export async function listNotes(
   token: string,
-  deps: Required<NotesDeps> = defaultDeps,
+  deps: NotesServiceDeps = defaultDeps,
 ): Promise<Note[]> {
   const userId = await requireUserId(token, deps);
   return deps.noteStore.listByUserId(userId);
@@ -163,7 +272,7 @@ export async function listNotes(
 export async function getNote(
   noteId: string,
   token: string,
-  deps: Required<NotesDeps> = defaultDeps,
+  deps: NotesServiceDeps = defaultDeps,
 ): Promise<Note | null> {
   const userId = await requireUserId(token, deps);
   return deps.noteStore.findByIdAndUserId(noteId, userId);
@@ -172,21 +281,18 @@ export async function getNote(
 export async function createNote(
   input: CreateNoteInput,
   token: string,
-  deps: Required<NotesDeps> = defaultDeps,
+  deps: NotesServiceDeps = defaultDeps,
 ): Promise<Note> {
   const userId = await requireUserId(token, deps);
-  const note = await deps.noteStore.insert({
-    userId,
-    title: input.title,
-    content: input.content,
-  });
-  await deps.versionStore.insert({
-    noteId: note.id,
-    userId,
-    version: 1,
-    title: input.title,
-    content: input.content,
-  });
+
+  const note = await runInTransaction(deps, (tx) =>
+    tx.createNoteWithVersion({
+      userId,
+      title: input.title,
+      content: input.content,
+    }),
+  );
+
   deps.auditLogger(userId, "NOTE_CREATED", { noteId: note.id, title: input.title });
   recordNoteOperation("create");
   return note;
@@ -201,7 +307,7 @@ export async function updateNote(
     isManualSave?: boolean;
   },
   token: string,
-  deps: Required<NotesDeps> = defaultDeps,
+  deps: NotesServiceDeps = defaultDeps,
 ): Promise<{ note: Note; snapshotCreated: boolean }> {
   const userId = await requireUserId(token, deps);
 
@@ -241,30 +347,39 @@ export async function updateNote(
     throw new ConflictError();
   }
 
-  const updated = await deps.noteStore.update(noteId, userId, {
-    title: input.title,
-    content: input.content,
-  });
+  const { note: updated, snapshotCreated } = await runInTransaction(
+    deps,
+    async (tx) => {
+      const updatedNote = await tx.updateNote(noteId, userId, {
+        title: input.title,
+        content: input.content,
+      });
 
-  const shouldSnapshot =
-    input.isManualSave === true ||
-    Date.now() - lastSnapshotAt >= SNAPSHOT_INTERVAL_MS;
+      const shouldSnapshot =
+        input.isManualSave === true ||
+        Date.now() - lastSnapshotAt >= SNAPSHOT_INTERVAL_MS;
 
-  let snapshotCreated = false;
-  if (shouldSnapshot) {
-    const snapshotTitle = input.isManualSave ? updated.title : previousTitle;
-    const snapshotContent = input.isManualSave
-      ? updated.content
-      : previousContent;
-    await deps.versionStore.insert({
-      noteId,
-      userId,
-      version: (latestVersion?.version ?? 0) + 1,
-      title: snapshotTitle,
-      content: snapshotContent,
-    });
-    snapshotCreated = true;
-  }
+      let didCreateSnapshot = false;
+      if (shouldSnapshot) {
+        const snapshotTitle = input.isManualSave
+          ? updatedNote.title
+          : previousTitle;
+        const snapshotContent = input.isManualSave
+          ? updatedNote.content
+          : previousContent;
+        await tx.insertVersion({
+          noteId,
+          userId,
+          version: (latestVersion?.version ?? 0) + 1,
+          title: snapshotTitle,
+          content: snapshotContent,
+        });
+        didCreateSnapshot = true;
+      }
+
+      return { note: updatedNote, snapshotCreated: didCreateSnapshot };
+    },
+  );
 
   if (snapshotCreated) {
     deps.auditLogger(userId, "NOTE_UPDATED", {
@@ -285,7 +400,7 @@ export async function updateNote(
 export async function deleteNote(
   noteId: string,
   token: string,
-  deps: Required<NotesDeps> = defaultDeps,
+  deps: NotesServiceDeps = defaultDeps,
 ): Promise<void> {
   const userId = await requireUserId(token, deps);
   const note = await deps.noteStore.findByIdAndUserId(noteId, userId);
@@ -298,7 +413,7 @@ export async function deleteNote(
 export async function getNoteVersions(
   noteId: string,
   token: string,
-  deps: Required<NotesDeps> = defaultDeps,
+  deps: NotesServiceDeps = defaultDeps,
 ): Promise<NoteVersion[]> {
   const userId = await requireUserId(token, deps);
   await requireOwnedNote(noteId, userId, deps);
@@ -309,7 +424,7 @@ export async function restoreVersion(
   noteId: string,
   versionId: string,
   token: string,
-  deps: Required<NotesDeps> = defaultDeps,
+  deps: NotesServiceDeps = defaultDeps,
 ): Promise<Note> {
   const userId = await requireUserId(token, deps);
   await requireOwnedNote(noteId, userId, deps);

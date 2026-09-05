@@ -5,6 +5,7 @@ import {
   consumeRecoveryCode,
   disableTwoFactor,
   initiateTwoFactorSetup,
+  InvalidPasswordFor2FADisableError,
   InvalidTwoFactorCodeError,
   RecoveryCodeInvalidError,
   TwoFactorNotEnabledError,
@@ -20,7 +21,7 @@ function makeUser(overrides: Partial<User> = {}): User {
   return {
     id: "user-id",
     email: "user@example.com",
-    passwordHash: "hash",
+    passwordHash: "hash:Str0ngPass!",
     twoFactorEnabled: false,
     twoFactorSecretEncrypted: null,
     twoFactorBackupCodes: null,
@@ -86,6 +87,11 @@ function createFakeDeps(initialUser: User): { deps: TwoFactorDeps; state: FakeSt
         "JJJJ-JJJJ-JJJJ-JJJJ",
       ],
       hashRecoveryCode: (code) => Promise.resolve(`hash:${code.toLowerCase()}`),
+    },
+    passwordStore: {
+      async verify(password, passwordHash) {
+        return passwordHash === `hash:${password}`;
+      },
     },
     auditLogger(userId, eventType, payload) {
       state.audits.push({ userId, eventType, payload });
@@ -279,7 +285,7 @@ describe("consumeRecoveryCode", () => {
 });
 
 describe("disableTwoFactor", () => {
-  it("clears the secret, backup codes, and disables 2FA", async () => {
+  it("disables 2FA with the correct current password", async () => {
     const user = makeUser({
       twoFactorEnabled: true,
       twoFactorSecretEncrypted: "enc:JBSWY3DPEHPK3PXP",
@@ -287,7 +293,7 @@ describe("disableTwoFactor", () => {
     });
     const { deps, state } = createFakeDeps(user);
 
-    await disableTwoFactor("user-id", deps);
+    await disableTwoFactor("user-id", "Str0ngPass!", deps);
 
     expect(state.users[0].twoFactorEnabled).toBe(false);
     expect(state.users[0].twoFactorSecretEncrypted).toBeNull();
@@ -297,12 +303,29 @@ describe("disableTwoFactor", () => {
     );
   });
 
-  it("throws for an unknown user", async () => {
+  it("rejects an incorrect password and leaves 2FA enabled", async () => {
+    const user = makeUser({
+      twoFactorEnabled: true,
+      twoFactorSecretEncrypted: "enc:JBSWY3DPEHPK3PXP",
+      twoFactorBackupCodes: ["hash:aaaa-aaaa-aaaa-aaaa"],
+    });
+    const { deps, state } = createFakeDeps(user);
+
+    await expect(
+      disableTwoFactor("user-id", "WrongPassword!", deps),
+    ).rejects.toBeInstanceOf(InvalidPasswordFor2FADisableError);
+
+    expect(state.users[0].twoFactorEnabled).toBe(true);
+    expect(state.users[0].twoFactorSecretEncrypted).toBe("enc:JBSWY3DPEHPK3PXP");
+    expect(state.users[0].twoFactorBackupCodes).toHaveLength(1);
+  });
+
+  it("throws for an unknown user without touching anything", async () => {
     const { deps } = createFakeDeps(makeUser());
 
-    await expect(disableTwoFactor("missing", deps)).rejects.toBeInstanceOf(
-      TwoFactorUserNotFoundError,
-    );
+    await expect(
+      disableTwoFactor("missing", "Str0ngPass!", deps),
+    ).rejects.toBeInstanceOf(TwoFactorUserNotFoundError);
   });
 });
 

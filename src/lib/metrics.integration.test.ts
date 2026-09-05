@@ -4,13 +4,14 @@ import { InvalidCredentialsError, loginUser } from "@/lib/auth/auth-service";
 import { getSession, hashSessionToken } from "@/lib/auth/session";
 import {
   consumeRecoveryCode,
+  disableTwoFactor,
   verifyLoginChallenge,
   type TwoFactorDeps,
 } from "@/lib/auth/two-factor-service";
 import {
   createNote,
   updateNote,
-  type NotesDeps,
+  type NotesServiceDeps,
 } from "@/lib/notes/notes-service";
 import type { Session, User } from "@/db/schema";
 import { registry } from "@/lib/metrics";
@@ -131,6 +132,11 @@ describe("telemetry integration (services -> counters)", () => {
         generateRecoveryCodes: () => [],
         hashRecoveryCode: async (c: string) => c,
       },
+      passwordStore: {
+        async verify() {
+          return true;
+        },
+      },
       auditLogger() {},
     };
 
@@ -165,6 +171,11 @@ describe("telemetry integration (services -> counters)", () => {
         generateRecoveryCodes: () => [],
         hashRecoveryCode: async (c: string) => c.toLowerCase(),
       },
+      passwordStore: {
+        async verify() {
+          return true;
+        },
+      },
       auditLogger() {},
     };
 
@@ -173,6 +184,50 @@ describe("telemetry integration (services -> counters)", () => {
     const out = await readCounter("auth_events_total");
     expect(out).toContain(
       'auth_events_total{type="2fa",status="failure",reason="invalid_recovery_code"} 1',
+    );
+  });
+
+  it("records an invalid-password 2FA disable attempt", async () => {
+    const deps: TwoFactorDeps = {
+      userStore: {
+        async findById() {
+          return makeUser({
+            twoFactorEnabled: true,
+            twoFactorSecretEncrypted: "encrypted-secret",
+            passwordHash: "hash-of-strong-password",
+          });
+        },
+        async updateTwoFactor() {},
+      },
+      sessionStore: {
+        async create() {
+          return { token: "t" };
+        },
+      },
+      crypto: {
+        generateTotpSecret: () => "A",
+        generateTotpUri: () => "otpauth://",
+        encryptSecret: (s: string) => s,
+        decryptSecret: (s: string) => s,
+        verifyTotp: () => false,
+        generateRecoveryCodes: () => [],
+        hashRecoveryCode: async (c: string) => c.toLowerCase(),
+      },
+      passwordStore: {
+        async verify() {
+          return false;
+        },
+      },
+      auditLogger() {},
+    };
+
+    await expect(
+      disableTwoFactor("user-id", "wrong-password", deps),
+    ).rejects.toThrow();
+
+    const out = await readCounter("auth_events_total");
+    expect(out).toContain(
+      'auth_events_total{type="2fa",status="failure",reason="invalid_password"} 1',
     );
   });
 
@@ -198,7 +253,7 @@ describe("telemetry integration (services -> counters)", () => {
       }>,
     };
 
-    const deps: Required<NotesDeps> = {
+    const deps: NotesServiceDeps = {
       noteStore: {
         async listByUserId(userId: string) {
           return state.notes.filter((n) => n.userId === userId && !n.deletedAt);

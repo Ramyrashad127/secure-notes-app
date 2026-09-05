@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { sql } from "drizzle-orm";
 import * as client from "@prometheus-io/client";
 
@@ -130,7 +131,8 @@ export const {
 export type AuthFailureReason =
   | "invalid_credentials"
   | "invalid_code"
-  | "invalid_recovery_code";
+  | "invalid_recovery_code"
+  | "invalid_password";
 
 export type AuthEventLabels = {
   type: "login" | "2fa";
@@ -176,8 +178,25 @@ export function recordCacheOperation(result: "hit" | "miss"): void {
   safeRecord(() => cacheOperations.inc({ result }));
 }
 
-export function classifyStatus(status: number): string {
+export function statusClass(status: number): string {
   return `${Math.floor(status / 100)}xx`;
+}
+
+/** Static bearer token required to scrape /api/metrics (env overridable). */
+export function metricsAccessToken(): string {
+  return process.env.METRICS_TOKEN ?? process.env.METRICS_BEARER_TOKEN ?? "";
+}
+
+/** Constant-time compare to avoid timing attacks on the metrics token. */
+export function safeTokenEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  if (left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
+}
+
+export function classifyStatus(status: number): string {
+  return statusClass(status);
 }
 
 /** Replace dynamic segments (UUIDs, numeric ids) with :id for cardinality safety. */

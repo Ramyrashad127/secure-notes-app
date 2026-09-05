@@ -8,6 +8,7 @@ import {
   consumeRecoveryCode as consumeRecoveryCodeService,
   disableTwoFactor as disableTwoFactorService,
   initiateTwoFactorSetup as initiateTwoFactorSetupService,
+  InvalidPasswordFor2FADisableError,
   InvalidTwoFactorCodeError,
   RecoveryCodeInvalidError,
   TwoFactorNotEnabledError,
@@ -58,6 +59,9 @@ function twoFactorError(error: unknown): { success: false; error: string } {
       success: false,
       error: "That recovery code is invalid or has already been used.",
     };
+  }
+  if (error instanceof InvalidPasswordFor2FADisableError) {
+    return { success: false, error: "Your password is incorrect" };
   }
   if (error instanceof TwoFactorNotEnabledError) {
     return {
@@ -236,12 +240,14 @@ export async function consumeRecoveryCode(
   }
 }
 
-export async function disable2FA(): Promise<TwoFactorActionResult> {
+export async function disable2FA(
+  currentPassword: string,
+): Promise<TwoFactorActionResult> {
   const userId = await getUserIdFromSession();
   if (!userId) return { success: false, error: "You must be signed in to do that" };
 
   try {
-    await disableTwoFactorService(userId);
+    await disableTwoFactorService(userId, currentPassword);
     return { success: true };
   } catch (error) {
     return twoFactorError(error);
