@@ -19,9 +19,6 @@ import {
 
 export const TWO_FACTOR_ISSUER = "Secure Notes";
 
-/** Cookie identifying the user mid-login while awaiting a 2FA challenge. */
-export const PENDING_2FA_COOKIE = "pending_2fa_user";
-
 export class TwoFactorUserNotFoundError extends Error {
   constructor() {
     super("User not found");

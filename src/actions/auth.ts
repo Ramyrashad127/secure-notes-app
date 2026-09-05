@@ -10,7 +10,16 @@ import {
   verifyLoginCredentials,
 } from "@/lib/auth/auth-service";
 import { SESSION_COOKIE_NAME } from "@/lib/auth/session";
-import { PENDING_2FA_COOKIE } from "@/lib/auth/two-factor-service";
+import {
+  createTwoFactorChallenge,
+  PENDING_2FA_CHALLENGE_COOKIE,
+} from "@/lib/auth/two-factor-challenge";
+import {
+  checkRateLimit,
+  getClientIp,
+  RateLimitExceededError,
+  rateLimitErrorMessage,
+} from "@/lib/auth/rate-limit";
 import { loginSchema, registerSchema } from "@/lib/validations/auth";
 
 export type AuthActionResult =
@@ -41,6 +50,14 @@ export async function registerAction(
   }
 
   try {
+    await checkRateLimit("register", await getClientIp());
+  } catch (error) {
+    if (error instanceof RateLimitExceededError) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  try {
     const cookie = await registerUser(parsed);
     const cookieStore = await cookies();
     cookieStore.set(cookie.name, cookie.value, cookie.options);
@@ -66,11 +83,23 @@ export async function loginAction(
   }
 
   try {
+    await checkRateLimit(
+      "login",
+      `${await getClientIp()}:${parsed.email.toLowerCase()}`,
+    );
+  } catch (error) {
+    if (error instanceof RateLimitExceededError) {
+      return { success: false, error: rateLimitErrorMessage() };
+    }
+  }
+
+  try {
     const user = await verifyLoginCredentials(parsed);
     const cookieStore = await cookies();
 
     if (user.twoFactorEnabled) {
-      cookieStore.set(PENDING_2FA_COOKIE, user.id, {
+      const pendingChallengeToken = await createTwoFactorChallenge(user.id);
+      cookieStore.set(PENDING_2FA_CHALLENGE_COOKIE, pendingChallengeToken, {
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
         sameSite: "strict",

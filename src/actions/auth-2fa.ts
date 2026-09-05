@@ -9,13 +9,22 @@ import {
   disableTwoFactor as disableTwoFactorService,
   initiateTwoFactorSetup as initiateTwoFactorSetupService,
   InvalidTwoFactorCodeError,
-  PENDING_2FA_COOKIE,
   RecoveryCodeInvalidError,
   TwoFactorNotEnabledError,
   TwoFactorSetupIncompleteError,
   verifyAndEnableTwoFactor as verifyAndEnableTwoFactorService,
   verifyLoginChallenge as verifyLoginChallengeService,
 } from "@/lib/auth/two-factor-service";
+import {
+  destroyTwoFactorChallenge,
+  PENDING_2FA_CHALLENGE_COOKIE,
+  resolveTwoFactorChallenge,
+} from "@/lib/auth/two-factor-challenge";
+import {
+  checkRateLimit,
+  getClientIp,
+  RateLimitExceededError,
+} from "@/lib/auth/rate-limit";
 
 const totpCodeSchema = z
   .string()
@@ -73,9 +82,15 @@ async function getUserIdFromSession(): Promise<string | null> {
   return user?.id ?? null;
 }
 
-async function getPendingUserId(): Promise<string | null> {
+async function getPendingChallengeToken(): Promise<string | null> {
   const cookieStore = await cookies();
-  return cookieStore.get(PENDING_2FA_COOKIE)?.value ?? null;
+  return cookieStore.get(PENDING_2FA_CHALLENGE_COOKIE)?.value ?? null;
+}
+
+async function invalidatePendingChallenge(token: string): Promise<void> {
+  await destroyTwoFactorChallenge(token);
+  const cookieStore = await cookies();
+  cookieStore.delete(PENDING_2FA_CHALLENGE_COOKIE);
 }
 
 async function setSessionCookie(value: string): Promise<void> {
@@ -89,7 +104,7 @@ async function setSessionCookie(value: string): Promise<void> {
     path: "/",
     maxAge: 60 * 60 * 24 * 14,
   });
-  cookieStore.delete(PENDING_2FA_COOKIE);
+  cookieStore.delete(PENDING_2FA_CHALLENGE_COOKIE);
 }
 
 export async function initiate2FASetup(): Promise<InitiateTwoFactorResult> {
@@ -143,7 +158,10 @@ export async function verifyLoginChallenge(
     return { success: false, error: message };
   }
 
-  const userId = await getPendingUserId();
+  const pendingToken = await getPendingChallengeToken();
+  const userId = pendingToken
+    ? (await resolveTwoFactorChallenge(pendingToken))?.userId ?? null
+    : null;
   if (!userId) {
     return {
       success: false,
@@ -152,8 +170,20 @@ export async function verifyLoginChallenge(
   }
 
   try {
+    await checkRateLimit(
+      "two-factor",
+      `${await getClientIp()}:${userId}`,
+    );
+  } catch (error) {
+    if (error instanceof RateLimitExceededError) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  try {
     const cookie = await verifyLoginChallengeService(userId, parsed);
     await setSessionCookie(cookie.value);
+    await invalidatePendingChallenge(pendingToken!);
     return { success: true };
   } catch (error) {
     return twoFactorError(error);
@@ -174,7 +204,10 @@ export async function consumeRecoveryCode(
     return { success: false, error: message };
   }
 
-  const userId = await getPendingUserId();
+  const pendingToken = await getPendingChallengeToken();
+  const userId = pendingToken
+    ? (await resolveTwoFactorChallenge(pendingToken))?.userId ?? null
+    : null;
   if (!userId) {
     return {
       success: false,
@@ -183,8 +216,20 @@ export async function consumeRecoveryCode(
   }
 
   try {
+    await checkRateLimit(
+      "two-factor",
+      `${await getClientIp()}:${userId}`,
+    );
+  } catch (error) {
+    if (error instanceof RateLimitExceededError) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  try {
     const cookie = await consumeRecoveryCodeService(userId, parsed);
     await setSessionCookie(cookie.value);
+    await invalidatePendingChallenge(pendingToken!);
     return { success: true };
   } catch (error) {
     return twoFactorError(error);
