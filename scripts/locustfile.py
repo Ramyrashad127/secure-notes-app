@@ -161,29 +161,66 @@ def post_action(
 ) -> dict | None:
     """POST a server action; returns the parsed result or None on failure.
 
-    Also fires a synthetic ``RL`` request event (visible as a distinct metric
-    in Grafana) whenever the Valkey rate limiter answers.
+    Also fires a synthetic rate-limit failure (visible in the locust report)
+    whenever the Valkey rate limiter answers.
+
+    The dev server regenerates action ids on demand. If a request comes back
+    with ``Failed to find Server Action ... older or newer deployment`` we
+    re-resolve the id from the manifest and retry once so the probe is robust
+    to stale ids mid-run.
     """
+
+    def issue(action_id: str):
+        return http_user.client.request(
+            "POST",
+            url,
+            headers={
+                "Next-Action": action_id,
+                "Content-Type": "text/plain;charset=UTF-8",
+            },
+            data=json.dumps(
+                [args] if isinstance(args, dict) else args,
+                separators=(",", ":"),
+            ),
+            name=url,
+            catch_response=True,
+        )
+
     action_id = ACTION_IDS.get(action)
     if not action_id:
         raise StopUser(f"missing action id for {action}")
-    payload = json.dumps([args] if isinstance(args, dict) else args, separators=(",", ":"))
-    with http_user.client.request(
-        "POST",
-        url,
-        headers={"Next-Action": action_id, "Content-Type": "text/plain;charset=UTF-8"},
-        data=payload,
-        name=url,
-        catch_response=True,
-    ) as resp:
+
+    with issue(action_id) as resp:
         result = rsc_result(resp.text)
+        stale_id = (
+            resp.status_code == 200
+            and result is None
+            and "Failed to find Server Action" in resp.text
+        )
+        if stale_id:
+            fresh_id = ACTION_IDS.get(action)
+            if fresh_id and fresh_id != action_id:
+                resp.failure("stale action id; retried")
+                with issue(fresh_id) as retry:
+                    result = rsc_result(retry.text)
+                    rate_limited = bool(
+                        result and "Too many attempts" in str(result.get("error", ""))
+                    )
+                    if rate_limited:
+                        retry.failure("rate limited (expected)")
+                        return None
+                    if retry.status_code != 200:
+                        retry.failure(str(retry.status_code))
+                        return None
+                    retry.success()
+                    return result
+            resp.failure("stale action id")
+            return None
+
         rate_limited = bool(
             result and "Too many attempts" in str(result.get("error", ""))
         )
         if rate_limited:
-            # The Valkey limiter answered for this bucket+discriminator. This is
-            # the *expected* outcome for RateLimitProbeUser and is surfaced as a
-            # failure so the locust report highlights the 429s clearly.
             resp.failure("rate limited (expected)")
             return None
         if resp.status_code != 200:
