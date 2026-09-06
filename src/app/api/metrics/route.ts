@@ -1,9 +1,6 @@
 import { NextResponse } from "next/server";
-import {
-  metricsAccessToken,
-  registry,
-  safeTokenEqual,
-} from "@/lib/metrics";
+import { metricsAccessToken, safeTokenEqual } from "@/lib/metrics-auth";
+import { registry } from "@/lib/metrics";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
