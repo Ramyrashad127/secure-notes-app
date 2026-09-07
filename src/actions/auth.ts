@@ -13,13 +13,16 @@ import { SESSION_COOKIE_NAME } from "@/lib/auth/session";
 import {
   createTwoFactorChallenge,
   PENDING_2FA_CHALLENGE_COOKIE,
+  TwoFactorCacheUnavailableError,
 } from "@/lib/auth/two-factor-challenge";
 import {
   checkRateLimit,
   getClientIp,
   RateLimitExceededError,
+  RateLimiterUnavailableError,
   rateLimitErrorMessage,
 } from "@/lib/auth/rate-limit";
+import { SERVICE_UNAVAILABLE_MESSAGE } from "@/lib/auth/service-unavailable";
 import { loginSchema, registerSchema } from "@/lib/validations/auth";
 
 export type AuthActionResult =
@@ -54,6 +57,9 @@ export async function registerAction(
   } catch (error) {
     if (error instanceof RateLimitExceededError) {
       return { success: false, error: error.message };
+    }
+    if (error instanceof RateLimiterUnavailableError) {
+      return { success: false, error: SERVICE_UNAVAILABLE_MESSAGE };
     }
   }
 
@@ -91,6 +97,9 @@ export async function loginAction(
     if (error instanceof RateLimitExceededError) {
       return { success: false, error: rateLimitErrorMessage() };
     }
+    if (error instanceof RateLimiterUnavailableError) {
+      return { success: false, error: SERVICE_UNAVAILABLE_MESSAGE };
+    }
   }
 
   try {
@@ -112,7 +121,10 @@ export async function loginAction(
     const cookie = await loginUser(parsed);
     cookieStore.set(cookie.name, cookie.value, cookie.options);
     return { success: true };
-  } catch {
+  } catch (error) {
+    if (error instanceof TwoFactorCacheUnavailableError) {
+      return { success: false, error: SERVICE_UNAVAILABLE_MESSAGE };
+    }
     return { success: false, error: "Invalid email or password" };
   }
 }

@@ -1,4 +1,4 @@
-"use server";
+﻿"use server";
 
 import { cookies } from "next/headers";
 import { z } from "zod";
@@ -17,15 +17,18 @@ import {
   verifyLoginChallenge as verifyLoginChallengeService,
 } from "@/lib/auth/two-factor-service";
 import {
+  checkRateLimit,
+  getClientIp,
+  RateLimitExceededError,
+  RateLimiterUnavailableError,
+} from "@/lib/auth/rate-limit";
+import {
+  TwoFactorCacheUnavailableError,
   destroyTwoFactorChallenge,
   PENDING_2FA_CHALLENGE_COOKIE,
   resolveTwoFactorChallenge,
 } from "@/lib/auth/two-factor-challenge";
-import {
-  checkRateLimit,
-  getClientIp,
-  RateLimitExceededError,
-} from "@/lib/auth/rate-limit";
+import { SERVICE_UNAVAILABLE_MESSAGE } from "@/lib/auth/service-unavailable";
 
 const totpCodeSchema = z
   .string()
@@ -162,10 +165,19 @@ export async function verifyLoginChallenge(
     return { success: false, error: message };
   }
 
-  const pendingToken = await getPendingChallengeToken();
-  const userId = pendingToken
-    ? (await resolveTwoFactorChallenge(pendingToken))?.userId ?? null
-    : null;
+  let pendingToken: string | null = null;
+  let userId: string | null = null;
+  try {
+    pendingToken = await getPendingChallengeToken();
+    userId = pendingToken
+      ? (await resolveTwoFactorChallenge(pendingToken))?.userId ?? null
+      : null;
+  } catch (error) {
+    if (error instanceof TwoFactorCacheUnavailableError) {
+      return { success: false, error: SERVICE_UNAVAILABLE_MESSAGE };
+    }
+    throw error;
+  }
   if (!userId) {
     return {
       success: false,
@@ -181,6 +193,9 @@ export async function verifyLoginChallenge(
   } catch (error) {
     if (error instanceof RateLimitExceededError) {
       return { success: false, error: error.message };
+    }
+    if (error instanceof RateLimiterUnavailableError) {
+      return { success: false, error: SERVICE_UNAVAILABLE_MESSAGE };
     }
   }
 
@@ -208,10 +223,19 @@ export async function consumeRecoveryCode(
     return { success: false, error: message };
   }
 
-  const pendingToken = await getPendingChallengeToken();
-  const userId = pendingToken
-    ? (await resolveTwoFactorChallenge(pendingToken))?.userId ?? null
-    : null;
+  let pendingToken: string | null = null;
+  let userId: string | null = null;
+  try {
+    pendingToken = await getPendingChallengeToken();
+    userId = pendingToken
+      ? (await resolveTwoFactorChallenge(pendingToken))?.userId ?? null
+      : null;
+  } catch (error) {
+    if (error instanceof TwoFactorCacheUnavailableError) {
+      return { success: false, error: SERVICE_UNAVAILABLE_MESSAGE };
+    }
+    throw error;
+  }
   if (!userId) {
     return {
       success: false,
@@ -227,6 +251,9 @@ export async function consumeRecoveryCode(
   } catch (error) {
     if (error instanceof RateLimitExceededError) {
       return { success: false, error: error.message };
+    }
+    if (error instanceof RateLimiterUnavailableError) {
+      return { success: false, error: SERVICE_UNAVAILABLE_MESSAGE };
     }
   }
 

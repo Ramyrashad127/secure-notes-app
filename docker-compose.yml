@@ -1,18 +1,53 @@
+# ============================================================
+# Secure Notes — production-compose stack (local test)
+#
+# All passwords/tokens come from the gitignored `.env` (Compose reads it
+# for ${VAR} interpolation automatically). The Ninja web container uses the
+# production image (next start), runs non-root, and connects over the
+# internal network only: Postgres, Valkey and Prometheus expose NO public
+# ports. Only the web app (3000) and Grafana (3100) are reachable on
+# 127.0.0.1 for local testing.
+# ============================================================
+
+x-web-common: &web-common
+  build:
+    context: .
+  image: secure-notes-web:latest
+  restart: unless-stopped
+  env_file:
+    - .env
+  environment:
+    # Override host-oriented URLs with the internal service names.
+    DATABASE_URL: postgres://secure_notes:${POSTGRES_PASSWORD}@postgres:5432/secure_notes
+    VALKEY_URL: redis://:${VALKEY_PASSWORD}@valkey:6379
+    METRICS_TOKEN: ${METRICS_TOKEN}
+  depends_on:
+    postgres:
+      condition: service_healthy
+    valkey:
+      condition: service_healthy
+
 services:
   postgres:
     image: postgres:16.4-alpine
     container_name: secure-notes-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: secure_notes
-      POSTGRES_PASSWORD: secure_notes
-      POSTGRES_DB: secure_notes
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+    # Loopback-only so host tooling (drizzle-kit, Playwright) can reach it
+    # locally without exposing Postgres on the LAN.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U secure_notes -d secure_notes"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -21,12 +56,26 @@ services:
     image: valkey/valkey:7.2.5-alpine
     container_name: secure-notes-valkey
     restart: unless-stopped
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
+    command:
+      - valkey-server
+      - --requirepass
+      - ${VALKEY_PASSWORD}
+      - --maxmemory
+      - 128mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --appendonly
+      - "yes"
+    # Loopback-only so host tooling (Playwright, redis-cli) can reach it
+    # locally without exposing Valkey on the LAN.
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - valkey_data:/data
     healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
+      test: ["CMD-SHELL", "valkey-cli -a $${VALKEY_PASSWORD} ping | grep PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -36,10 +85,13 @@ services:
     container_name: secure-notes-grafana
     restart: unless-stopped
     environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
     ports:
-      - "3100:3000"
+      - "127.0.0.1:3100:3000"
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
@@ -49,37 +101,24 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   web:
-    build:
-      context: .
+    <<: *web-common
     container_name: secure-notes-web
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      DATABASE_URL: postgres://secure_notes:secure_notes@postgres:5432/secure_notes
-      VALKEY_URL: redis://valkey:6379
     ports:
-      - "3000:3000"
-    volumes:
-      - .:/app
-      - /app/node_modules
-    depends_on:
-      postgres:
-        condition: service_healthy
-      valkey:
-        condition: service_healthy
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   prometheus:
     image: prom/prometheus:v2.54.0
     container_name: secure-notes-prometheus
     restart: unless-stopped
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     environment:
@@ -88,10 +127,13 @@ services:
       - /bin/sh
       - -c
       - |
+        [ -n "$$METRICS_TOKEN" ] || { echo "METRICS_TOKEN unset"; exit 1; }
         echo -n "$$METRICS_TOKEN" > /etc/prometheus/metrics_token
+        chmod 600 /etc/prometheus/metrics_token
         exec /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --web.enable-lifecycle
     depends_on:
-      - web
+      web:
+        condition: service_healthy
 
 volumes:
   postgres_data:

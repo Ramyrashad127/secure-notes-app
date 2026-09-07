@@ -38,13 +38,13 @@ export interface SessionDeps {
 
 const defaultDeps: Required<SessionDeps> = {
   valkeyStore: {
-    async get(key) {
+    get(key) {
       return valkey.get(key);
     },
-    async set(key, value, ttlSeconds) {
+    set(key, value, ttlSeconds) {
       return valkey.set(key, value, "EX", ttlSeconds);
     },
-    async del(key) {
+    del(key) {
       return valkey.del(key);
     },
   },
@@ -95,7 +95,18 @@ async function getCachedSession(
   tokenHash: string,
   store: SessionCacheStore,
 ): Promise<Session | null> {
-  const raw = await store.get(cacheKey(tokenHash));
+  let raw: string | null;
+  try {
+    raw = await store.get(cacheKey(tokenHash));
+  } catch (err) {
+    // Cache unavailable: fail open by treating the read as a miss so the
+    // caller falls back to PostgreSQL. Never let a cache outage become a 500.
+    console.warn?.(
+      "[SESSION_CACHE] read failed; falling back to database:",
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
+  }
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Session;
@@ -115,12 +126,20 @@ async function cacheSession(
   tokenHash: string,
   session: Session,
   store: SessionCacheStore,
-): Promise<unknown> {
-  return store.set(
-    cacheKey(tokenHash),
-    JSON.stringify(session),
-    SESSION_TTL_SECONDS,
-  );
+): Promise<void> {
+  try {
+    await store.set(
+      cacheKey(tokenHash),
+      JSON.stringify(session),
+      SESSION_TTL_SECONDS,
+    );
+  } catch (err) {
+    // Write failure is non-fatal: the session already exists in the database.
+    console.warn?.(
+      "[SESSION_CACHE] write failed; continuing without cache:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 }
 
 function isSessionValid(session: Session, now: Date): boolean {
@@ -170,7 +189,16 @@ export async function revokeSession(
   deps: Required<SessionDeps> = defaultDeps,
 ): Promise<void> {
   const tokenHash = hashSessionToken(token);
-  await deps.valkeyStore.del(cacheKey(tokenHash));
+  try {
+    await deps.valkeyStore.del(cacheKey(tokenHash));
+  } catch (err) {
+    // Deleting from the cache is best-effort; the DB revoke is the source of
+    // truth and must not be interrupted by a cache outage.
+    console.warn?.(
+      "[SESSION_CACHE] delete failed; continuing with database revoke:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
   await deps.dbStore.revoke(tokenHash, reason);
 }
 
