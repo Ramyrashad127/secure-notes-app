@@ -24,6 +24,19 @@ export class RateLimitExceededError extends Error {
   }
 }
 
+/**
+ * Thrown when the rate-limiter backend (ValKey) is unavailable. Auth actions
+ * must FAIL CLOSED: without the limiter we refuse to process login/register
+ * rather than operate unthrottled (session handling is the only path that
+ * fails open to the database).
+ */
+export class RateLimiterUnavailableError extends Error {
+  constructor() {
+    super("Rate limiting is temporarily unavailable");
+    this.name = "RateLimiterUnavailableError";
+  }
+}
+
 export interface RateLimiterStore {
   increment(key: string, windowSeconds: number): Promise<number>;
 }
@@ -53,10 +66,21 @@ export async function checkRateLimit(
   store: RateLimiterStore = defaultStore,
 ): Promise<void> {
   const config = RATE_LIMIT_CONFIGS[bucket];
-  const count = await store.increment(
-    rateLimitKey(bucket, discriminator),
-    config.windowSeconds,
-  );
+  let count: number;
+  try {
+    count = await store.increment(
+      rateLimitKey(bucket, discriminator),
+      config.windowSeconds,
+    );
+  } catch (err) {
+    // Fail closed: if ValKey is down we cannot enforce the limit, so signal
+    // unavailability instead of letting requests through unthrottled.
+    console.error?.(
+      "[RATE_LIMIT] backend unavailable; failing closed:",
+      err instanceof Error ? err.message : String(err),
+    );
+    throw new RateLimiterUnavailableError();
+  }
   if (count > config.limit) {
     throw new RateLimitExceededError(
       "Too many attempts. Please try again later.",

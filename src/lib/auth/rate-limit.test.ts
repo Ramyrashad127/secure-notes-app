@@ -4,6 +4,7 @@ import {
   checkRateLimit,
   getClientIp,
   RateLimitExceededError,
+  RateLimiterUnavailableError,
   rateLimitKey,
   RATE_LIMIT_CONFIGS,
   type RateLimiterStore,
@@ -113,6 +114,37 @@ describe("rateLimitKey", () => {
     expect(rateLimitKey("two-factor", "ip:user-1")).toBe(
       "ratelimit:two-factor:ip:user-1",
     );
+  });
+});
+
+describe("checkRateLimit (fail-closed)", () => {
+  it("throws RateLimiterUnavailableError when the backend throws", async () => {
+    const failingStore: RateLimiterStore = {
+      async increment() {
+        throw new Error("connect ECONNREFUSED");
+      },
+    };
+
+    await expect(
+      checkRateLimit("login", "ip:user@example.com", failingStore),
+    ).rejects.toBeInstanceOf(RateLimiterUnavailableError);
+  });
+
+  it("does not surface the raw backend error", async () => {
+    const failingStore: RateLimiterStore = {
+      async increment() {
+        throw new Error("connect ECONNREFUSED valkey:6379");
+      },
+    };
+
+    let caught: unknown;
+    try {
+      await checkRateLimit("register", "ip", failingStore);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(RateLimiterUnavailableError);
+    expect((caught as Error).message).not.toContain("ECONNREFUSED");
   });
 });
 

@@ -8,6 +8,19 @@ export const TWO_FACTOR_CHALLENGE_TTL_SECONDS = 60 * 10;
 
 const VALKEY_KEY_PREFIX = "2fa-challenge:";
 
+/**
+ * Thrown when the 2FA challenge backend (ValKey) is unavailable. The 2FA
+ * login challenge MUST fail closed: without the ephemeral cache token we
+ * cannot safely establish a challenge, so callers surface an error page
+ * instead of letting auth proceed.
+ */
+export class TwoFactorCacheUnavailableError extends Error {
+  constructor() {
+    super("Two-factor challenge is temporarily unavailable");
+    this.name = "TwoFactorCacheUnavailableError";
+  }
+}
+
 export interface TwoFactorChallengeRecord {
   userId: string;
   createdAt: string;
@@ -33,30 +46,55 @@ export function hashChallengeToken(token: string): string {
 
 const defaultStore: TwoFactorChallengeStore = {
   async create(userId, ttlSeconds = TWO_FACTOR_CHALLENGE_TTL_SECONDS) {
-    const token = generateChallengeToken();
-    const record: TwoFactorChallengeRecord = {
-      userId,
-      createdAt: new Date().toISOString(),
-    };
-    await valkey.set(
-      challengeKey(hashChallengeToken(token)),
-      JSON.stringify(record),
-      "EX",
-      ttlSeconds,
-    );
-    return token;
+    try {
+      const token = generateChallengeToken();
+      const record: TwoFactorChallengeRecord = {
+        userId,
+        createdAt: new Date().toISOString(),
+      };
+      await valkey.set(
+        challengeKey(hashChallengeToken(token)),
+        JSON.stringify(record),
+        "EX",
+        ttlSeconds,
+      );
+      return token;
+    } catch (err) {
+      console.error?.(
+        "[2FA_CHALLENGE] create failed; failing closed:",
+        err instanceof Error ? err.message : String(err),
+      );
+      throw new TwoFactorCacheUnavailableError();
+    }
   },
   async resolve(token) {
-    const raw = await valkey.get(challengeKey(hashChallengeToken(token)));
-    if (!raw) return null;
     try {
-      return JSON.parse(raw) as TwoFactorChallengeRecord;
-    } catch {
-      return null;
+      const raw = await valkey.get(challengeKey(hashChallengeToken(token)));
+      if (!raw) return null;
+      try {
+        return JSON.parse(raw) as TwoFactorChallengeRecord;
+      } catch {
+        return null;
+      }
+    } catch (err) {
+      console.error?.(
+        "[2FA_CHALLENGE] resolve failed; failing closed:",
+        err instanceof Error ? err.message : String(err),
+      );
+      throw new TwoFactorCacheUnavailableError();
     }
   },
   async destroy(token) {
-    await valkey.del(challengeKey(hashChallengeToken(token)));
+    try {
+      await valkey.del(challengeKey(hashChallengeToken(token)));
+    } catch (err) {
+      // Destroying the challenge is best-effort cleanup; if ValKey is down
+      // the TTL will expire it. Do not block the successful login on it.
+      console.error?.(
+        "[2FA_CHALLENGE] destroy failed (ignored):",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   },
 };
 
@@ -64,19 +102,43 @@ export async function createTwoFactorChallenge(
   userId: string,
   store: TwoFactorChallengeStore = defaultStore,
 ): Promise<string> {
-  return store.create(userId);
+  try {
+    return await store.create(userId);
+  } catch (err) {
+    console.error?.(
+      "[2FA_CHALLENGE] create failed; failing closed:",
+      err instanceof Error ? err.message : String(err),
+    );
+    throw new TwoFactorCacheUnavailableError();
+  }
 }
 
 export async function resolveTwoFactorChallenge(
   token: string,
   store: TwoFactorChallengeStore = defaultStore,
 ): Promise<TwoFactorChallengeRecord | null> {
-  return store.resolve(token);
+  try {
+    return await store.resolve(token);
+  } catch (err) {
+    console.error?.(
+      "[2FA_CHALLENGE] resolve failed; failing closed:",
+      err instanceof Error ? err.message : String(err),
+    );
+    throw new TwoFactorCacheUnavailableError();
+  }
 }
 
 export async function destroyTwoFactorChallenge(
   token: string,
   store: TwoFactorChallengeStore = defaultStore,
 ): Promise<void> {
-  await store.destroy(token);
+  try {
+    await store.destroy(token);
+  } catch (err) {
+    // Best-effort cleanup; the TTL will expire the challenge.
+    console.error?.(
+      "[2FA_CHALLENGE] destroy failed (ignored):",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 }

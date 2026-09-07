@@ -23,7 +23,21 @@ export async function proxy(request: NextRequest) {
   const normalizedPathname = trimTrailingSlash(pathname);
 
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
-  const session = token ? await getSession(token) : null;
+  let session = null;
+  if (token) {
+    try {
+      session = await getSession(token);
+    } catch (err) {
+      // Session resolution failed end-to-end (cache AND database unreachable,
+      // or an unexpected error). Fail safe as unauthenticated so the request
+      // proceeds as a guest/redirect instead of surfacing an uncaught 500.
+      console.error(
+        "[PROXY] session resolution failed; treating as unauthenticated:",
+        err instanceof Error ? err.message : String(err),
+      );
+      session = null;
+    }
+  }
   const isAuthenticated = session !== null;
 
   let response: NextResponse;

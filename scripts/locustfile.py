@@ -132,8 +132,11 @@ def rsc_result(body: str) -> dict | None:
     """Extract the JSON result row from a Next.js RSC action response.
 
     A successful action streams a flight payload whose rows are
-    ``<hex>:<json>``, notably ``1:{"success":true,"note":{...}}`` or
-    ``1:{"success":false,"error":"Too many attempts. ..."}``.
+    ``<hex>:<json>``; the actual action result appears as an object row such as
+    ``1:{"success":true,"note":{...}}`` or ``1:{"success":false,"error":...}``.
+    Production RSC payloads also contain non-object rows (e.g.
+    ``2:"$Sreact.fragment"``) and full-page flight renders, so we scan for the
+    FIRST row that parses to a JSON object and ignore strings/numbers.
     """
     if not body:
         return None
@@ -143,9 +146,11 @@ def rsc_result(body: str) -> dict | None:
             continue
         candidate = stripped[2:]
         try:
-            return json.loads(candidate)
+            parsed = json.loads(candidate)
         except (ValueError, IndexError):
             continue
+        if isinstance(parsed, dict):
+            return parsed
     return None
 
 

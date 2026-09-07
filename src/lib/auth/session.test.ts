@@ -169,3 +169,113 @@ describe("revokeSession", () => {
     await expect(getSession(token, new Date(), deps)).resolves.toBeNull();
   });
 });
+
+describe("cache fault tolerance", () => {
+  it("getSession falls back to the db when the cache read throws", async () => {
+    const { deps, stores } = createFakeDeps();
+    const { token, session } = await createSession("user-id", undefined, deps);
+    stores.cache.clear();
+
+    const throwingStore: SessionCacheStore = {
+      async get() {
+        throw new Error("connect ECONNREFUSED");
+      },
+      async set() {},
+      async del() {},
+    };
+
+    const result = await getSession(token, new Date(), { ...deps, valkeyStore: throwingStore });
+    expect(result).toEqual(session);
+  });
+
+  it("getSession returns null when both cache and db are down", async () => {
+    const { deps } = createFakeDeps();
+
+    const throwingStore: SessionCacheStore = {
+      async get() {
+        throw new Error("connect ECONNREFUSED");
+      },
+      async set() {},
+      async del() {},
+    };
+
+    await expect(
+      getSession("token", new Date(), { ...deps, valkeyStore: throwingStore }),
+    ).resolves.toBeNull();
+  });
+
+  it("createSession still persists to the db when the cache write throws", async () => {
+    const { deps, stores } = createFakeDeps();
+
+    const throwingStore: SessionCacheStore = {
+      async get() {
+        return null;
+      },
+      async set() {
+        throw new Error("connect ECONNREFUSED");
+      },
+      async del() {},
+    };
+
+    const { token, session } = await createSession("user-id", undefined, {
+      ...deps,
+      valkeyStore: throwingStore,
+    });
+
+    expect(session.userId).toBe("user-id");
+    expect(stores.db.size).toBe(1);
+    // Cache write failed but the DB session is authoritative.
+    await expect(getSession(token, new Date(), deps)).resolves.toEqual(session);
+  });
+
+  it("getSession still works when the cache write back on a miss throws", async () => {
+    const { deps, stores } = createFakeDeps();
+    const { token, session } = await createSession("user-id", undefined, deps);
+    stores.cache.clear();
+
+    const throwingStore: SessionCacheStore = {
+      async get() {
+        return null; // always a miss -> forces db fallback
+      },
+      async set() {
+        throw new Error("connect ECONNREFUSED");
+      },
+      async del() {},
+    };
+
+    const result = await getSession(token, new Date(), { ...deps, valkeyStore: throwingStore });
+    expect(result).toEqual(session);
+  });
+
+  it("revokeSession still revokes the db record when the cache delete throws", async () => {
+    const { deps, stores } = createFakeDeps();
+    const { token } = await createSession("user-id", undefined, deps);
+
+    const throwingStore: SessionCacheStore = {
+      async get() {
+        return null;
+      },
+      async set() {},
+      async del() {
+        throw new Error("connect ECONNREFUSED");
+      },
+    };
+
+    await revokeSession(token, "logout", { ...deps, valkeyStore: throwingStore });
+
+    const sessions = Array.from(stores.db.values());
+    expect(sessions[0].revokedAt).toBeInstanceOf(Date);
+    expect(sessions[0].revokedReason).toBe("logout");
+
+    // A fresh lookup of the revoked session (non-throwing cache) must return
+    // null — the DB revoke is authoritative even though the cache delete threw.
+    const fresh = createFakeDeps();
+    const stored = stores.db.get(hashSessionToken(token));
+    if (stored) {
+      fresh.stores.db.set(hashSessionToken(token), stored);
+      await expect(getSession(token, new Date(), fresh.deps)).resolves.toBeNull();
+    } else {
+      throw new Error("expected a stored session");
+    }
+  });
+});

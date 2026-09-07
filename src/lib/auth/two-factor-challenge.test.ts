@@ -32,6 +32,8 @@ import {
   PENDING_2FA_CHALLENGE_COOKIE,
   resolveTwoFactorChallenge,
   TWO_FACTOR_CHALLENGE_TTL_SECONDS,
+  TwoFactorCacheUnavailableError,
+  type TwoFactorChallengeStore,
 } from "./two-factor-challenge";
 
 describe("challenge token primitives", () => {
@@ -109,5 +111,39 @@ describe("Valkey-backed challenge lifecycle", () => {
 
     expect((await resolveTwoFactorChallenge(tokenA))?.userId).toBe("user-a");
     expect((await resolveTwoFactorChallenge(tokenB))?.userId).toBe("user-b");
+  });
+});
+
+describe("two-factor challenge (fail-closed)", () => {
+  it("create throws TwoFactorCacheUnavailableError when the backend is down", async () => {
+    const failingStore: TwoFactorChallengeStore = {
+      async create() {
+        throw new Error("connect ECONNREFUSED");
+      },
+      async resolve() {
+        throw new Error("connect ECONNREFUSED");
+      },
+      async destroy() {},
+    };
+
+    await expect(
+      createTwoFactorChallenge("user-42", failingStore),
+    ).rejects.toBeInstanceOf(TwoFactorCacheUnavailableError);
+  });
+
+  it("resolve throws TwoFactorCacheUnavailableError when the backend is down", async () => {
+    const failingStore: TwoFactorChallengeStore = {
+      async create() {
+        return "token";
+      },
+      async resolve() {
+        throw new Error("connect ECONNREFUSED");
+      },
+      async destroy() {},
+    };
+
+    await expect(
+      resolveTwoFactorChallenge("some-token", failingStore),
+    ).rejects.toBeInstanceOf(TwoFactorCacheUnavailableError);
   });
 });

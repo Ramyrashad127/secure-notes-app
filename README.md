@@ -48,19 +48,27 @@ challenges, and database-transaction-safe note editing with version snapshots.
 ## Local Docker Compose Setup
 
 All services are defined in `docker-compose.yml`, which builds the Next.js
-app from the included `Dockerfile` and wires up Postgres, Valkey, Prometheus,
-and Grafana into one network.
+app from the included multi-stage `Dockerfile` and wires up Postgres, Valkey,
+Prometheus, and Grafana into one network. The `web` service runs the
+**production** build (`next start`) as a non-root user.
 
 ```bash
-# 1. Create .env from the template (optional but recommended)
-cp .env.example .env
+# 1. Generate secrets into .env (never commit it)
+#    The template documents every variable and how to generate it:
+python - <<'EOF'
+import secrets, base64
+print(f"POSTGRES_PASSWORD={secrets.token_urlsafe(24)}")
+print(f"VALKEY_PASSWORD={secrets.token_urlsafe(24)}")
+print(f"GRAFANA_ADMIN_PASSWORD={secrets.token_urlsafe(24)}")
+print(f"METRICS_TOKEN={secrets.token_urlsafe(40)}")
+print(f"TWO_FACTOR_ENCRYPTION_KEY={base64.b64encode(secrets.token_bytes(32)).decode()}")
+EOF
 
-# 2. Generate a metrics scrape token (used to secure /api/metrics)
-#    Add it to .env as: METRICS_TOKEN=<long-random-string>
-python -c "import secrets; print(secrets.token_urlsafe(40))"
-
-# 3. Build and start the entire stack
+# 2. Build and start the entire stack (production mode)
 docker compose up -d --build
+
+# 3. Apply the database schema (Postgres is exposed on 127.0.0.1 for host tools)
+npx drizzle-kit push --force
 
 # 4. Verify everything is healthy
 docker compose ps
@@ -74,12 +82,27 @@ secure-notes-grafana      Up (healthy)
 secure-notes-postgres     Up (healthy)
 secure-notes-valkey       Up (healthy)
 secure-notes-prometheus   Up
-secure-notes-web          Up
+secure-notes-web          Up (healthy)
 ```
 
-The `web` container runs `next dev` and bind-mounts the repo into
-`/app` (with an anonymous `node_modules` volume) so edits hot-reload without
-rebuilding the image.
+### Security posture (production stack)
+
+- **Secrets**: every password/token is interpolated from the gitignored
+  `.env`; nothing sensitive is committed (`docker-compose.yml` references
+  `${VAR}` only).
+- **Network**: Postgres, Valkey and Prometheus expose **no public ports**.
+  Postgres/Valkey are reachable on `127.0.0.1` (loopback only) so host tools
+  (drizzle-kit, Playwright, redis-cli) still work. Only the web app (3000) and
+  Grafana (3100) are published, also on loopback.
+- **Non-root**: the web container runs as an unprivileged `nodejs` user.
+- **Valkey**: requires a password (`--requirepass`) with 128 MB LRU cap + AOF.
+- **Grafana**: sign-ups and anonymous access disabled; admin password from env.
+- **HTTP**: security headers (HSTS, X-Frame-Options, CSP, etc.) are applied by
+  `next.config.ts`; `/api/metrics` stays Bearer-token protected; a lightweight
+  unauthenticated `/api/health` endpoint backs the container healthcheck.
+- **Pools**: Postgres `max_connections=200`; the app DB pool is `max: 40`
+  (`src/db/index.ts`) and ioredis uses a 10s connect timeout with retries.
+  These are the knobs to raise if the DB ever becomes the bottleneck.
 
 ### Ports
 
@@ -256,6 +279,11 @@ regenerated on every dev-server restart. The script **discovers the ids at
 runtime** from `server-reference-manifest.json` (the `.:/app` bind mount puts
 it inside the repo). On failure it warns and falls back to constants matching
 the current build.
+
+> **Production builds** emit server-action ids that are *not* present in the
+> on-disk manifests. To load-test the production container, capture the ids
+> once by driving the UI with a headless browser (intercept the `Next-Action`
+> header on the network requests) and point your probe at those constants.
 
 ### Run
 

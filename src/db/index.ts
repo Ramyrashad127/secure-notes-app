@@ -10,7 +10,7 @@ if (!connectionString) {
 
 export const client = instrumentPostgres(
   postgres(connectionString, {
-    max: 10,
+    max: 40,
     onnotice: () => {},
   }),
 );
